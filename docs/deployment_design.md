@@ -105,7 +105,7 @@ GitHub Actions Secretsに秘密鍵を保存し、ワークフロー内でTailsca
 - **Mac Mini実機**: 初期セットアップ完了（[mac_mini_setup_runbook.md](./mac_mini_setup_runbook.md)参照）。
   Tailscale・Docker導入済み、systemdタイマー登録・実機での動作確認（`docker run`→成功時の
   シャットダウン→次回電源投入時の`setpci`自動起動）まで確認済み
-- **ghcr.ioパッケージの可視性**: `build-push.yml`初回実行後、GitHubリポジトリのPackages設定で
-  手動でPublicに切り替える必要がある（`GITHUB_TOKEN`でpushしたパッケージはデフォルト非公開）。
-  未対応（`build-push.yml`初回実行後に対応予定）
+- **ghcr.ioパッケージの可視性**: `build-push.yml`実行・確認済み（2026-08-26）。公開リポジトリに
+  紐づくパッケージは`GITHUB_TOKEN`でのpush時点で自動的にPublicになっており、想定していた
+  「手動でPublicに切り替える」作業は不要だった（当初の想定が誤りだったため、この節を修正）
 - 初回10年分バックフィルの実行: 未対応

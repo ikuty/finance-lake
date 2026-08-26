@@ -30,6 +30,6 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/edinet-dl:latest
 
-# 初回push後、GitHubリポジトリの Packages 設定でパッケージ（edinet-dl）の可視性を
-# Public に変更すること（GITHUB_TOKEN でpushしたパッケージはデフォルトで非公開のため、
-# 手動での一度きりの切り替えが必要。docs/deployment_design.md「ghcr.ioの認証」参照）。
+# パッケージ（edinet-dl）は公開リポジトリに紐づくため、GITHUB_TOKENでのpush時点で
+# 自動的にPublicになる（手動での可視性切り替えは不要だった。2026-08-26に実機確認済み。
+# docs/deployment_design.md「ghcr.ioの認証」参照）。
