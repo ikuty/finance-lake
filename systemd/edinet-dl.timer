@@ -1,0 +1,20 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdタイマーユニットの例。
+# /etc/systemd/system/edinet-dl.timer にコピーする（edinet-dl.serviceと対で使う）。
+#
+# 電源はスマートプラグ（Tapo P110M）で毎日定時に投入・遮断される。OnCalendarは電源投入から
+# OS起動・Docker起動が完了しているであろう時刻を見込んで設定すること。Persistent=trueに
+# より、電源投入の遅延でOnCalendarの時刻をわずかに過ぎても、起動直後に自動的に発火する。
+#
+# OnBootSec（起動からの相対時刻）ではなくOnCalendar（固定時刻）を使っているのは、開発時に
+# Tailscale経由で手動起動したセッションでもジョブ＋シャットダウンが毎回走ってしまうのを
+# 避けるため。
+
+[Unit]
+Description=Run edinet-dl daily fetch
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

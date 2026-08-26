@@ -1,0 +1,25 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdサービスユニットの例。
+# /etc/systemd/system/edinet-dl.service にコピーし、自分の環境の実際のユーザー名・パスに
+# 合わせて書き換えること。
+#
+# システムユニットとしてroot権限で実行されるため、shutdownの実行にsudoers設定は不要。
+#
+# ExecStartは2行に分けている。1行目（docker run）が失敗すると2行目（shutdown）は実行
+# されない（診断のためマシンを起動したままにする。電源はスマートプラグが定時に遮断する）。
+#
+# 有効化・起動確認:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable edinet-dl.timer
+#   sudo systemctl start edinet-dl.timer
+#   systemctl list-timers edinet-dl.timer
+#   journalctl -u edinet-dl.service
+
+[Unit]
+Description=EDINET daily document fetch
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/edinet-dl/.env -v /home/<user>/edinet-dl/data:/data edinet-dl:latest
+ExecStart=/sbin/shutdown -h now

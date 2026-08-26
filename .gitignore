@@ -1,0 +1,12 @@
+.env
+.env.local
+*.env
+
+# SQLite index DB (regenerable, stays on VPS local disk)
+data/
+
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.venv/
