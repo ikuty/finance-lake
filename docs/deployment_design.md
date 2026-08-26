@@ -92,8 +92,16 @@ GitHub Actions Secretsに秘密鍵を保存し、ワークフロー内でTailsca
 | ビルド＆push（ghcr.io） | `main`へのpush（自動） | 依存しない |
 | デプロイ（`docker pull`） | `workflow_dispatch`（手動） | 依存する（ユーザーが電源投入を確認してから実行） |
 
-## 未実装
+## 実装状況
 
-- `.github/workflows/`のワークフローファイル自体
-- リモートリポジトリの作成・初回push（GitHubへのpush先。公開設定は決定済み）
+- `.github/workflows/build-push.yml`・`deploy.yml`・`gitleaks.yml`: 実装済み（2026-08-25）
+- リモートリポジトリ作成・初回push: 完了（https://github.com/ikuty/edinet-dl、公開）
+
+## 未設定（実際に動かすために必要）
+
+- **Secrets**: `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`（Tailscale管理画面でOAuthクライアントを
+  作成）、`SSH_PRIVATE_KEY`（対応する公開鍵をMac Miniの`~/.ssh/authorized_keys`に登録）、
+  `MAC_MINI_HOST`/`MAC_MINI_USER`
+- **ghcr.ioパッケージの可視性**: `build-push.yml`初回実行後、GitHubリポジトリのPackages設定で
+  手動でPublicに切り替える必要がある（`GITHUB_TOKEN`でpushしたパッケージはデフォルト非公開）
 - Mac Mini実機での初期セットアップ（[mac_mini_setup_runbook.md](./mac_mini_setup_runbook.md)参照）

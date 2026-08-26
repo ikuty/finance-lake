@@ -2,7 +2,7 @@
 .env.local
 *.env
 
-# SQLite index DB (regenerable, stays on VPS local disk)
+# SQLite DB・書類本体ファイル（regenerable, Mac Miniの/home配下HDDに置く）
 data/
 
 __pycache__/

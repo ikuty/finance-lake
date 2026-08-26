@@ -1,0 +1,35 @@
+name: Build and push image
+
+# 設計: docs/deployment_design.md
+# main へのpushで自動実行。Mac Miniの稼働状態に依存しないビルド＆push工程のみを担う。
+# Mac Miniへの反映は deploy.yml（手動トリガー）で別途行う。
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/edinet-dl:latest
+
+# 初回push後、GitHubリポジトリの Packages 設定でパッケージ（edinet-dl）の可視性を
+# Public に変更すること（GITHUB_TOKEN でpushしたパッケージはデフォルトで非公開のため、
+# 手動での一度きりの切り替えが必要。docs/deployment_design.md「ghcr.ioの認証」参照）。

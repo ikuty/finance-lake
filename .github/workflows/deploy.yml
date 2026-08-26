@@ -1,0 +1,38 @@
+name: Deploy to Mac Mini
+
+# 設計: docs/deployment_design.md
+# workflow_dispatch による手動トリガーのみ。Mac Miniは電源スケジュールで稼働時間が
+# 限られているため、電源投入・Tailscale経由での到達性をユーザーが確認してから実行すること。
+#
+# 事前準備（未設定の場合はこのワークフローは失敗する）:
+#   - Tailscale管理画面でOAuthクライアントを作成し、Secrets に
+#     TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET を設定する
+#   - Mac MiniへSSH接続するための秘密鍵を Secrets の SSH_PRIVATE_KEY に設定する
+#     （対応する公開鍵をMac Miniの ~/.ssh/authorized_keys に登録しておく）
+#   - MAC_MINI_HOST（Tailscaleホスト名）、MAC_MINI_USER（SSHユーザー名）を
+#     Secrets またはこのファイル内の環境変数として設定する
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Connect to tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Pull latest image on Mac Mini
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.MAC_MINI_HOST }}
+          username: ${{ secrets.MAC_MINI_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: docker pull ghcr.io/${{ github.repository_owner }}/edinet-dl:latest
+
+# docker run --rm 方式（コンテナ内にデーモンを置かない）のため、pull後の再起動や
+# サービス再読み込みは不要。次回のsystemdタイマー実行から新しいイメージが使われる。
