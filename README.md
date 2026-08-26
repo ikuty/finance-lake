@@ -66,3 +66,7 @@ mypy
 
 EDINET由来のデータを利用・加工する際は、EDINET利用規約に従い出典表記が必須。
 例:「出典：EDINET閲覧（提出）サイト（該当ページのURL）、PDL1.0」
+
+## ライセンス
+
+[MIT License](./LICENSE)
