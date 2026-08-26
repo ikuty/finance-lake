@@ -97,11 +97,15 @@ GitHub Actions Secretsに秘密鍵を保存し、ワークフロー内でTailsca
 - `.github/workflows/build-push.yml`・`deploy.yml`・`gitleaks.yml`: 実装済み（2026-08-25）
 - リモートリポジトリ作成・初回push: 完了（https://github.com/ikuty/edinet-dl、公開）
 
-## 未設定（実際に動かすために必要）
+## セットアップ完了状況（2026-08-26時点）
 
-- **Secrets**: `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`（Tailscale管理画面でOAuthクライアントを
-  作成）、`SSH_PRIVATE_KEY`（対応する公開鍵をMac Miniの`~/.ssh/authorized_keys`に登録）、
-  `MAC_MINI_HOST`/`MAC_MINI_USER`
+- **Secrets**: `SSH_PRIVATE_KEY`・`MAC_MINI_HOST`・`MAC_MINI_USER`・`TS_OAUTH_CLIENT_ID`・
+  `TS_OAUTH_SECRET`の5つとも設定済み。TailscaleのOAuthクライアントは`tag:ci`スコープの
+  `Auth Keys`（Write）で作成（管理画面の「Devices」ではなく「Keys」カテゴリ配下）
+- **Mac Mini実機**: 初期セットアップ完了（[mac_mini_setup_runbook.md](./mac_mini_setup_runbook.md)参照）。
+  Tailscale・Docker導入済み、systemdタイマー登録・実機での動作確認（`docker run`→成功時の
+  シャットダウン→次回電源投入時の`setpci`自動起動）まで確認済み
 - **ghcr.ioパッケージの可視性**: `build-push.yml`初回実行後、GitHubリポジトリのPackages設定で
-  手動でPublicに切り替える必要がある（`GITHUB_TOKEN`でpushしたパッケージはデフォルト非公開）
-- Mac Mini実機での初期セットアップ（[mac_mini_setup_runbook.md](./mac_mini_setup_runbook.md)参照）
+  手動でPublicに切り替える必要がある（`GITHUB_TOKEN`でpushしたパッケージはデフォルト非公開）。
+  未対応（`build-push.yml`初回実行後に対応予定）
+- 初回10年分バックフィルの実行: 未対応
