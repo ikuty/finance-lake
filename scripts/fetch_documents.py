@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """EDINET書類一覧API (https://api.edinet-fsa.go.jp/api/v2/documents.json) を
-日付単位で呼び出し、日付ごとの取得状況をSQLite(fetch_progress)に記録する。
+日付単位で呼び出し、書類本体（XBRL/PDF/CSV）を取得して生データのまま保存する。
+取得状況は日付ごとにSQLite(fetch_progress)へ記録する。
 
 このリポジトリはファイルの取得・格納（レイク層）に特化する。書類メタデータの
 列展開・検索用インデックス作成、及び中身の解釈（パース）は後段の別リポジトリの
-責務とし、ここでは扱わない。
+責務とし、ここでは扱わない。設計の詳細は docs/file_download_design.md を参照。
 
 実行モードは2通り:
   - 初回バックフィル(手動): --start-date/--end-date で過去10年分程度を指定
@@ -14,41 +15,84 @@
 窓を1日より広く取ることで、電源障害等でジョブが実行されなかった日や、一時的な失敗で
 errorになった日も、後続の実行で自動的に再試行される。
 
+対象は secCode が設定されている書類（上場企業）のみ。type=1(XBRL)・type=2(PDF)・
+type=5(CSV化XBRL)の3形式を data/{fileDate}/{edinetCode}/{docID}_{type}.{ext} に
+そのまま（未展開で）保存する。個々のファイルは存在チェックによる冪等性を持ち、
+DBに進捗テーブルは持たない（fetch_progressは日付単位のみ）。
+
 Usage:
-    python3 build_index.py                    # DAYS_WINDOW日分（既定3日）を対象に日次実行
-    python3 build_index.py --start-date 2016-08-13 --end-date 2026-08-13
-    python3 build_index.py --days 7 --force   # 取得済みの日付も再取得
+    python3 fetch_documents.py                    # DAYS_WINDOW日分（既定3日）を対象に日次実行
+    python3 fetch_documents.py --start-date 2016-08-13 --end-date 2026-08-13
+    python3 fetch_documents.py --days 7 --force   # 取得済みの日付も再取得
 
 設定は環境変数から読む(Dockerの --env-file を想定):
-    EDINET_API_KEY  必須。EDINET APIキー
-    DB_PATH         省略時 /data/edinet_index.db
-    REQUEST_DELAY   省略時 1.2 (秒)
-    DAYS_WINDOW     省略時 3。--days未指定時に日次実行で遡る日数
+    EDINET_API_KEY    必須。EDINET APIキー
+    DB_PATH           省略時 /data/edinet_index.db
+    DATA_DIR          省略時 /data/raw。書類本体の保存先ルート
+    LOG_PATH          省略時 /data/logs/edinet-dl.log
+    REQUEST_DELAY     省略時 1.2 (秒)
+    DAYS_WINDOW       省略時 3。--days未指定時に日次実行で遡る日数
+    SLACK_WEBHOOK_URL 省略可。設定時のみ実行結果をSlackへ通知する
 """
 from __future__ import annotations
 
 import argparse
 import datetime
 import json
+import logging
 import os
+import shutil
 import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Iterator
 
 DEFAULT_DB_PATH = "/data/edinet_index.db"
+DEFAULT_DATA_DIR = "/data/raw"
+DEFAULT_LOG_PATH = "/data/logs/edinet-dl.log"
 DEFAULT_DELAY = 1.2
 DEFAULT_DAYS_WINDOW = 3
+LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB
+LOG_BACKUP_COUNT = 5  # 最大5世代 ≒ 合計25MB程度
 
-API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
+LIST_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
+DOC_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents"
 USER_AGENT = "Mozilla/5.0 (compatible; edinet-dl/1.0)"
+
+# 書類取得APIのtype番号 -> (ファイル名サフィックス, 拡張子)
+TYPE_EXT: dict[int, tuple[str, str]] = {
+    1: ("xbrl", "zip"),
+    2: ("pdf", "pdf"),
+    5: ("csv", "zip"),
+}
+# 書類一覧APIのフラグ項目名 -> 対応する書類取得APIのtype番号
+FLAG_TYPE: list[tuple[str, int]] = [
+    ("xbrlFlag", 1),
+    ("pdfFlag", 2),
+    ("csvFlag", 5),
+]
 
 
 class RateLimitedError(RuntimeError):
     pass
+
+
+@dataclass
+class RunStats:
+    """1回の実行のサマリ。Slack通知用に集計するだけの一時的な構造で、永続化はしない。"""
+
+    start: datetime.date
+    end: datetime.date
+    days_processed: list[str] = field(default_factory=list)
+    days_failed: dict[str, str] = field(default_factory=dict)
+    downloaded_count: int = 0
+    downloaded_bytes: int = 0
+    rate_limit_retries: int = 0
 
 
 def load_api_key() -> str:
@@ -56,6 +100,26 @@ def load_api_key() -> str:
     if not key:
         raise RuntimeError("環境変数 EDINET_API_KEY が設定されていません")
     return key
+
+
+def setup_logger(log_path: str) -> logging.Logger:
+    logger = logging.getLogger("edinet-dl")
+    logger.setLevel(logging.INFO)
+    if logger.handlers:
+        return logger  # 同一プロセス内で複数回呼ばれても二重登録しない（テスト等）
+
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(log_path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler(sys.stderr)
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    return logger
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
@@ -81,33 +145,57 @@ def already_done(conn: sqlite3.Connection, date_str: str) -> bool:
     return row is not None and row[0] == "done"
 
 
-def fetch_day(date_str: str, api_key: str, max_retries: int = 5) -> dict[str, Any]:
-    url = f"{API_BASE}?date={date_str}&type=2&Subscription-Key={api_key}"
+def store_progress(
+    conn: sqlite3.Connection, date_str: str, status: str, doc_count: int, message: str | None
+) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO fetch_progress (fileDate, status, docCount, message, fetchedAt) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (date_str, status, doc_count, message, datetime.datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+
+
+def _http_get(url: str, stats: RunStats, max_retries: int = 5) -> bytes:
+    """共通のHTTPフェッチ+リトライ。429・ネットワークエラー/タイムアウト・5xxはリトライ対象
+    （最大5回、指数バックオフ）、それ以外の4xxは即座に失敗とする（再試行しても無駄なため）。"""
     attempt = 0
     while True:
         attempt += 1
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                http_status = resp.status
-                body = resp.read()
+                body: bytes = resp.read()
+                return body
         except urllib.error.HTTPError as e:
-            http_status = e.code
-            body = e.read()
-
-        if http_status == 429:
+            retryable = e.code == 429 or 500 <= e.code < 600
+            if e.code == 429:
+                stats.rate_limit_retries += 1
+            if not retryable:
+                raise RuntimeError(f"{url}: HTTPエラー status={e.code}") from e
             if attempt > max_retries:
-                raise RateLimitedError(f"{date_str}: 429が続くためリトライ上限に達しました")
-            time.sleep(min(60, 2 ** attempt))
-            continue
+                raise RateLimitedError(f"{url}: リトライ上限に達しました (status={e.code})") from e
+            time.sleep(min(60, 2**attempt))
+        except (urllib.error.URLError, OSError) as e:
+            if attempt > max_retries:
+                raise RuntimeError(f"{url}: ネットワークエラーが続くためリトライ上限に達しました ({e})") from e
+            time.sleep(min(60, 2**attempt))
 
+
+def fetch_day(date_str: str, api_key: str, stats: RunStats, max_retries: int = 5) -> dict[str, Any]:
+    url = f"{LIST_API_BASE}?date={date_str}&type=2&Subscription-Key={api_key}"
+    attempt = 0
+    while True:
+        attempt += 1
+        body = _http_get(url, stats, max_retries=max_retries)
         data: dict[str, Any] = json.loads(body.decode("utf-8"))
-        status = str(data.get("metadata", {}).get("status", http_status))
+        status = str(data.get("metadata", {}).get("status", "200"))
 
         if status == "429":
+            stats.rate_limit_retries += 1
             if attempt > max_retries:
                 raise RateLimitedError(f"{date_str}: 429が続くためリトライ上限に達しました")
-            time.sleep(min(60, 2 ** attempt))
+            time.sleep(min(60, 2**attempt))
             continue
 
         if status not in ("200", "OK"):
@@ -117,15 +205,98 @@ def fetch_day(date_str: str, api_key: str, max_retries: int = 5) -> dict[str, An
         return data
 
 
-def store_day(conn: sqlite3.Connection, date_str: str, data: dict[str, Any]) -> int:
-    results = data.get("results", [])
-    conn.execute(
-        "INSERT OR REPLACE INTO fetch_progress (fileDate, status, docCount, message, fetchedAt) "
-        "VALUES (?, 'done', ?, NULL, ?)",
-        (date_str, len(results), datetime.datetime.now().isoformat(timespec="seconds")),
+def fetch_document_file(
+    doc_id: str, type_code: int, api_key: str, stats: RunStats, max_retries: int = 5
+) -> bytes:
+    url = f"{DOC_API_BASE}/{doc_id}?type={type_code}&Subscription-Key={api_key}"
+    return _http_get(url, stats, max_retries=max_retries)
+
+
+def doc_file_path(data_dir: Path, file_date: str, edinet_code: str, doc_id: str, type_code: int) -> Path:
+    suffix, ext = TYPE_EXT[type_code]
+    return data_dir / file_date / edinet_code / f"{doc_id}_{suffix}.{ext}"
+
+
+def save_atomic(path: Path, data: bytes) -> None:
+    """一時ファイル→renameでアトミックに保存する。中断時に壊れたファイルが残らないようにする。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / (path.name + ".tmp")
+    tmp_path.write_bytes(data)
+    os.replace(tmp_path, path)
+
+
+def download_doc_files(
+    doc: dict[str, Any],
+    date_str: str,
+    data_dir: Path,
+    api_key: str,
+    delay: float,
+    stats: RunStats,
+    logger: logging.Logger,
+) -> bool:
+    """対象docIDの、フラグが立っているtypeをダウンロードする。既に存在するファイルはスキップ
+    する。全て成功（またはスキップ）すればTrue、1件でも失敗すればFalseを返す。"""
+    doc_id = doc["docID"]
+    edinet_code = doc["edinetCode"]
+    ok = True
+    for flag_name, type_code in FLAG_TYPE:
+        if doc.get(flag_name) != "1":
+            continue
+        dest = doc_file_path(data_dir, date_str, edinet_code, doc_id, type_code)
+        if dest.exists():
+            continue
+        try:
+            body = fetch_document_file(doc_id, type_code, api_key, stats)
+            save_atomic(dest, body)
+            stats.downloaded_count += 1
+            stats.downloaded_bytes += len(body)
+        except Exception as e:
+            ok = False
+            logger.error(f"{date_str} {doc_id} edinetCode={edinet_code} type={type_code}: ダウンロード失敗 ({e})")
+        finally:
+            time.sleep(delay)
+    return ok
+
+
+def process_day(
+    conn: sqlite3.Connection,
+    date_str: str,
+    api_key: str,
+    data_dir: Path,
+    delay: float,
+    stats: RunStats,
+    logger: logging.Logger,
+    log_path: str,
+) -> int:
+    """対象日の一覧取得〜書類本体ダウンロード〜fetch_progress更新までを行う。
+    戻り値はsecCode絞り込み後の対象件数。"""
+    day_start = time.monotonic()
+    data = fetch_day(date_str, api_key, stats)
+    all_results = data.get("results", [])
+    targets = [r for r in all_results if r.get("secCode")]
+    logger.info(f"{date_str}: 一覧{len(all_results)}件 / 対象{len(targets)}件")
+
+    failed_doc_ids: list[str] = []
+    for doc in targets:
+        ok = download_doc_files(doc, date_str, data_dir, api_key, delay, stats, logger)
+        if not ok:
+            failed_doc_ids.append(doc["docID"])
+
+    elapsed = time.monotonic() - day_start
+    logger.info(
+        f"{date_str}: 完了 (成功{len(targets) - len(failed_doc_ids)}件 / "
+        f"失敗{len(failed_doc_ids)}件, {elapsed:.1f}秒)"
     )
-    conn.commit()
-    return len(results)
+
+    if failed_doc_ids:
+        message = f"{len(failed_doc_ids)}/{len(targets)} files failed (see {log_path})"
+        store_progress(conn, date_str, "error", len(targets), message)
+        stats.days_failed[date_str] = message
+    else:
+        store_progress(conn, date_str, "done", len(targets), None)
+
+    stats.days_processed.append(date_str)
+    return len(targets)
 
 
 def date_range(start: datetime.date, end: datetime.date) -> Iterator[datetime.date]:
@@ -142,36 +313,80 @@ def run(
     end: datetime.date,
     delay: float,
     force: bool,
-) -> int:
+    data_dir: Path,
+    logger: logging.Logger,
+    log_path: str,
+) -> RunStats:
     dates = list(date_range(start, end))
     todo = [d for d in dates if force or not already_done(conn, d.isoformat())]
-    print(f"対象期間: {start} 〜 {end}（{len(dates)}日間）/ 未取得: {len(todo)}日", file=sys.stderr)
+    stats = RunStats(start=start, end=end)
+    logger.info(f"対象期間: {start} 〜 {end}（{len(dates)}日間）/ 未取得: {len(todo)}日 / force={force}")
 
-    total_docs = 0
     for i, d in enumerate(todo):
         date_str = d.isoformat()
         try:
-            data = fetch_day(date_str, api_key)
-            count = store_day(conn, date_str, data)
-            total_docs += count
-            print(f"[{i + 1}/{len(todo)}] {date_str}: {count}件", file=sys.stderr)
+            process_day(conn, date_str, api_key, data_dir, delay, stats, logger, log_path)
         except RateLimitedError as e:
-            print(f"[{i + 1}/{len(todo)}] {date_str}: 中断 ({e})", file=sys.stderr)
+            logger.error(f"[{i + 1}/{len(todo)}] {date_str}: 中断 ({e})")
             break
         except Exception as e:
-            conn.execute(
-                "INSERT OR REPLACE INTO fetch_progress (fileDate, status, docCount, message, fetchedAt) "
-                "VALUES (?, 'error', 0, ?, ?)",
-                (date_str, str(e), datetime.datetime.now().isoformat(timespec="seconds")),
-            )
-            conn.commit()
-            print(f"[{i + 1}/{len(todo)}] {date_str}: エラー ({e})", file=sys.stderr)
+            store_progress(conn, date_str, "error", 0, str(e))
+            stats.days_failed[date_str] = str(e)
+            logger.error(f"[{i + 1}/{len(todo)}] {date_str}: エラー ({e})")
 
         if i < len(todo) - 1:
             time.sleep(delay)
 
-    print(f"完了。新規取得 {total_docs}件。", file=sys.stderr)
-    return total_docs
+    logger.info(
+        f"完了。処理{len(stats.days_processed)}日 / "
+        f"ダウンロード成功{stats.downloaded_count}件 / 失敗{len(stats.days_failed)}日"
+    )
+    return stats
+
+
+def format_bytes(n: int) -> str:
+    mb = n / (1024 * 1024)
+    if mb >= 1024:
+        return f"{mb / 1024:.1f}GB"
+    return f"{mb:.1f}MB"
+
+
+def build_slack_message(stats: RunStats, free_bytes: int) -> str:
+    free_gb = free_bytes / (1024**3)
+    period = f"{stats.start} 〜 {stats.end}"
+    n_days = len(stats.days_processed)
+
+    if stats.days_failed:
+        n_failed = len(stats.days_failed)
+        lines = [
+            f"❌ edinet-dl 日次実行 失敗 ({n_failed}/{n_days}日)",
+            f"期間: {period} ({n_days}日処理、うち{n_failed}日失敗)",
+        ]
+        for date_str, message in stats.days_failed.items():
+            lines.append(f"失敗: {date_str} ({message})")
+    else:
+        lines = [
+            "✅ edinet-dl 日次実行 成功",
+            f"期間: {period} ({n_days}日処理)",
+        ]
+
+    lines.append(f"ダウンロード: {stats.downloaded_count}件 / {format_bytes(stats.downloaded_bytes)}")
+    lines.append(f"429発生: {stats.rate_limit_retries}回")
+    lines.append(f"空き容量: {free_gb:.1f}GB")
+    return "\n".join(lines)
+
+
+def send_slack_notification(webhook_url: str, message: str, logger: logging.Logger) -> None:
+    """Slackへの通知失敗はログに記録するのみで、例外は上げない（ジョブ全体の成否に影響させない）。"""
+    try:
+        payload = json.dumps({"text": message}).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+    except Exception as e:
+        logger.error(f"Slack通知の送信に失敗しました: {e}")
 
 
 def main() -> None:
@@ -198,10 +413,27 @@ def main() -> None:
 
     api_key = load_api_key()
     db_path = Path(os.environ.get("DB_PATH", DEFAULT_DB_PATH))
+    data_dir = Path(os.environ.get("DATA_DIR", DEFAULT_DATA_DIR))
+    log_path = os.environ.get("LOG_PATH", DEFAULT_LOG_PATH)
     delay = float(os.environ.get("REQUEST_DELAY", DEFAULT_DELAY))
-    conn = init_db(db_path)
+    slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
 
-    run(conn, api_key, start, end, delay, args.force)
+    logger = setup_logger(log_path)
+    conn = init_db(db_path)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    stats = run(conn, api_key, start, end, delay, args.force, data_dir, logger, log_path)
+
+    try:
+        free_bytes = shutil.disk_usage(data_dir).free
+    except OSError:
+        free_bytes = 0
+
+    message = build_slack_message(stats, free_bytes)
+    logger.info("summary: " + message.replace("\n", " / "))
+
+    if slack_webhook_url:
+        send_slack_notification(slack_webhook_url, message, logger)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import sys
 import time
+import urllib.error
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -14,9 +16,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import fetch_documents  # noqa: E402
 
+TEST_LOGGER = logging.getLogger("test-edinet-dl")
+
 
 def make_response(status: str, results: list[dict[str, Any]]) -> bytes:
     return json.dumps({"metadata": {"status": status}, "results": results}).encode("utf-8")
+
+
+def make_stats() -> fetch_documents.RunStats:
+    return fetch_documents.RunStats(start=datetime.date(2026, 8, 13), end=datetime.date(2026, 8, 13))
+
+
+# --- date_range / DB progress ------------------------------------------------
 
 
 def test_date_range_inclusive() -> None:
@@ -38,90 +49,352 @@ def test_init_db_creates_tables(tmp_path: Path) -> None:
     assert {"fetch_progress"} <= tables
 
 
-def test_store_day_marks_done_with_doc_count(tmp_path: Path) -> None:
+def test_store_progress_done_and_already_done(tmp_path: Path) -> None:
     conn = fetch_documents.init_db(tmp_path / "index.db")
-    data = {
-        "results": [
-            {"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340", "filerName": "テスト株式会社"},
-        ]
-    }
-    count = fetch_documents.store_day(conn, "2026-08-13", data)
-    assert count == 1
+    fetch_documents.store_progress(conn, "2026-08-13", "done", 5, None)
     assert fetch_documents.already_done(conn, "2026-08-13")
 
     row = conn.execute(
-        "SELECT docCount FROM fetch_progress WHERE fileDate = ?", ("2026-08-13",)
+        "SELECT docCount, message FROM fetch_progress WHERE fileDate = ?", ("2026-08-13",)
     ).fetchone()
-    assert row[0] == 1
+    assert row == (5, None)
 
 
-def test_store_day_overwrites_progress_on_rerun(tmp_path: Path) -> None:
+def test_store_progress_error_is_not_done(tmp_path: Path) -> None:
     conn = fetch_documents.init_db(tmp_path / "index.db")
-    fetch_documents.store_day(conn, "2026-08-13", {"results": [{"docID": "S100AAAA"}]})
-    fetch_documents.store_day(conn, "2026-08-13", {"results": [{"docID": "S100AAAA"}, {"docID": "S100BBBB"}]})
+    fetch_documents.store_progress(conn, "2026-08-13", "error", 3, "2/3 files failed")
+    assert not fetch_documents.already_done(conn, "2026-08-13")
+
+    row = conn.execute(
+        "SELECT status, message FROM fetch_progress WHERE fileDate = ?", ("2026-08-13",)
+    ).fetchone()
+    assert row == ("error", "2/3 files failed")
+
+
+def test_store_progress_overwrites_on_rerun(tmp_path: Path) -> None:
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    fetch_documents.store_progress(conn, "2026-08-13", "error", 3, "boom")
+    fetch_documents.store_progress(conn, "2026-08-13", "done", 3, None)
 
     rows = conn.execute(
-        "SELECT docCount FROM fetch_progress WHERE fileDate = ?", ("2026-08-13",)
+        "SELECT status FROM fetch_progress WHERE fileDate = ?", ("2026-08-13",)
     ).fetchall()
     assert len(rows) == 1
-    assert rows[0][0] == 2
+    assert rows[0][0] == "done"
 
 
-def test_fetch_day_raises_on_error_status() -> None:
-    mock_resp = MagicMock()
-    mock_resp.status = 200
-    mock_resp.read.return_value = make_response("400", [])
-    mock_resp.__enter__.return_value = mock_resp
-
-    with patch("fetch_documents.urllib.request.urlopen", return_value=mock_resp):
-        try:
-            fetch_documents.fetch_day("2026-08-13", "dummy-key")
-            assert False, "should have raised"
-        except RuntimeError as e:
-            assert "400" in str(e)
+# --- _http_get: 共通のHTTPフェッチ+リトライ -----------------------------------
 
 
-def test_fetch_day_retries_then_succeeds_on_429(monkeypatch: pytest.MonkeyPatch) -> None:
-    responses = [
-        make_response("429", []),
-        make_response("200", [{"docID": "S100AAAA"}]),
-    ]
-
+def _mock_urlopen_sequence(*responses: Any) -> Any:
     def fake_urlopen(*args: object, **kwargs: object) -> MagicMock:
+        item = responses[fake_urlopen.calls]  # type: ignore[attr-defined]
+        fake_urlopen.calls += 1  # type: ignore[attr-defined]
+        if isinstance(item, Exception):
+            raise item
         mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read.return_value = responses.pop(0)
+        mock_resp.read.return_value = item
         mock_resp.__enter__.return_value = mock_resp
         return mock_resp
 
+    fake_urlopen.calls = 0  # type: ignore[attr-defined]
+    return fake_urlopen
+
+
+def test_http_get_retries_on_429_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    err_429 = urllib.error.HTTPError("http://x", 429, "rate limited", None, None)  # type: ignore[arg-type]
+    fake = _mock_urlopen_sequence(err_429, b"ok")
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake_urlopen):
-        data = fetch_documents.fetch_day("2026-08-13", "dummy-key")
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
+        body = fetch_documents._http_get("http://example/", stats)
+    assert body == b"ok"
+    assert stats.rate_limit_retries == 1
+
+
+def test_http_get_retries_on_network_error_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    fake = _mock_urlopen_sequence(urllib.error.URLError("timed out"), b"ok")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
+        body = fetch_documents._http_get("http://example/", stats)
+    assert body == b"ok"
+    assert stats.rate_limit_retries == 0  # ネットワークエラーは429カウントに含めない
+
+
+def test_http_get_retries_on_5xx_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    err_500 = urllib.error.HTTPError("http://x", 500, "server error", None, None)  # type: ignore[arg-type]
+    fake = _mock_urlopen_sequence(err_500, b"ok")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
+        body = fetch_documents._http_get("http://example/", stats)
+    assert body == b"ok"
+
+
+def test_http_get_fails_immediately_on_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    err_404 = urllib.error.HTTPError("http://x", 404, "not found", None, None)  # type: ignore[arg-type]
+    fake = _mock_urlopen_sequence(err_404)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
+        with pytest.raises(RuntimeError, match="404"):
+            fetch_documents._http_get("http://example/", stats)
+    assert fake.calls == 1  # リトライしない
+
+
+def test_http_get_raises_rate_limited_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    err_429 = urllib.error.HTTPError("http://x", 429, "rate limited", None, None)  # type: ignore[arg-type]
+    fake = _mock_urlopen_sequence(*([err_429] * 3))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
+        with pytest.raises(fetch_documents.RateLimitedError):
+            fetch_documents._http_get("http://example/", stats, max_retries=2)
+
+
+# --- fetch_day -----------------------------------------------------------------
+
+
+def test_fetch_day_raises_on_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    fake = _mock_urlopen_sequence(make_response("400", []))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
+        with pytest.raises(RuntimeError, match="400"):
+            fetch_documents.fetch_day("2026-08-13", "dummy-key", stats)
+
+
+def test_fetch_day_retries_on_embedded_429_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    fake = _mock_urlopen_sequence(
+        make_response("429", []),
+        make_response("200", [{"docID": "S100AAAA"}]),
+    )
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
+        data = fetch_documents.fetch_day("2026-08-13", "dummy-key", stats)
     assert data["results"][0]["docID"] == "S100AAAA"
+    assert stats.rate_limit_retries == 1
 
 
-def test_run_skips_already_done_dates_unless_forced(tmp_path: Path) -> None:
+# --- doc_file_path / save_atomic ------------------------------------------------
+
+
+def test_doc_file_path_naming(tmp_path: Path) -> None:
+    path = fetch_documents.doc_file_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 1)
+    assert path == tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl.zip"
+
+    path_pdf = fetch_documents.doc_file_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 2)
+    assert path_pdf.name == "S100YVG3_pdf.pdf"
+
+
+def test_save_atomic_writes_file(tmp_path: Path) -> None:
+    dest = tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl.zip"
+    fetch_documents.save_atomic(dest, b"zip-bytes")
+    assert dest.read_bytes() == b"zip-bytes"
+    assert not (dest.parent / (dest.name + ".tmp")).exists()
+
+
+def test_save_atomic_leaves_no_partial_file_on_write_failure(tmp_path: Path) -> None:
+    dest = tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl.zip"
+    dest.parent.mkdir(parents=True)
+
+    with patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")):
+        with pytest.raises(OSError):
+            fetch_documents.save_atomic(dest, b"zip-bytes")
+
+    assert not dest.exists()
+    assert not (dest.parent / (dest.name + ".tmp")).exists()
+
+
+# --- download_doc_files ----------------------------------------------------------
+
+
+def test_download_doc_files_skips_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "1", "pdfFlag": "0", "csvFlag": "0"}
+    dest = fetch_documents.doc_file_path(tmp_path, "2026-08-13", "E00001", "S100AAAA", 1)
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"already-here")
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.fetch_document_file") as mock_fetch:
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+
+    assert ok is True
+    mock_fetch.assert_not_called()
+    assert dest.read_bytes() == b"already-here"  # 上書きされていない
+
+
+def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "1", "pdfFlag": "1", "csvFlag": "0"}
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.fetch_document_file", return_value=b"data") as mock_fetch:
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+
+    assert ok is True
+    assert mock_fetch.call_count == 2  # xbrl + pdf
+    assert stats.downloaded_count == 2
+    assert stats.downloaded_bytes == 8  # b"data" x2
+    assert (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_xbrl.zip").read_bytes() == b"data"
+    assert (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_pdf.pdf").read_bytes() == b"data"
+
+
+def test_download_doc_files_returns_false_on_partial_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stats = make_stats()
+    doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "1", "pdfFlag": "1", "csvFlag": "0"}
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch(
+        "fetch_documents.fetch_document_file", side_effect=[b"data", RuntimeError("boom")]
+    ):
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+
+    assert ok is False
+    assert stats.downloaded_count == 1  # xbrlだけ成功
+
+
+# --- run / process_day -----------------------------------------------------------
+
+
+def test_run_skips_already_done_dates_unless_forced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     conn = fetch_documents.init_db(tmp_path / "index.db")
-    fetch_documents.store_day(conn, "2026-08-13", {"results": []})
+    fetch_documents.store_progress(conn, "2026-08-13", "done", 0, None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
-    with patch("fetch_documents.fetch_day") as mock_fetch:
-        mock_fetch.return_value = {"results": []}
+    with patch("fetch_documents.fetch_day") as mock_fetch_day:
+        mock_fetch_day.return_value = {"results": []}
         fetch_documents.run(
-            conn,
-            "dummy-key",
-            datetime.date(2026, 8, 13),
-            datetime.date(2026, 8, 13),
-            delay=0,
-            force=False,
+            conn, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
+            delay=0, force=False, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
         )
-        mock_fetch.assert_not_called()
+        mock_fetch_day.assert_not_called()
 
         fetch_documents.run(
-            conn,
-            "dummy-key",
-            datetime.date(2026, 8, 13),
-            datetime.date(2026, 8, 13),
-            delay=0,
-            force=True,
+            conn, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
+            delay=0, force=True, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
         )
-        mock_fetch.assert_called_once()
+        mock_fetch_day.assert_called_once()
+
+
+def test_process_day_marks_done_when_all_downloads_succeed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    stats = make_stats()
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    data = {"results": [{"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340"}]}
+    with patch("fetch_documents.fetch_day", return_value=data), \
+         patch("fetch_documents.download_doc_files", return_value=True):
+        count = fetch_documents.process_day(
+            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log"
+        )
+
+    assert count == 1
+    assert fetch_documents.already_done(conn, "2026-08-13")
+    assert stats.days_processed == ["2026-08-13"]
+    assert stats.days_failed == {}
+
+
+def test_process_day_marks_error_when_a_download_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    stats = make_stats()
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    data = {"results": [{"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340"}]}
+    with patch("fetch_documents.fetch_day", return_value=data), \
+         patch("fetch_documents.download_doc_files", return_value=False):
+        fetch_documents.process_day(
+            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log"
+        )
+
+    assert not fetch_documents.already_done(conn, "2026-08-13")
+    assert "2026-08-13" in stats.days_failed
+
+
+def test_process_day_filters_out_docs_without_seccode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    stats = make_stats()
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    data = {
+        "results": [
+            {"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340"},
+            {"docID": "S100BBBB", "edinetCode": "E00002", "secCode": None},
+        ]
+    }
+    with patch("fetch_documents.fetch_day", return_value=data), \
+         patch("fetch_documents.download_doc_files", return_value=True) as mock_dl:
+        count = fetch_documents.process_day(
+            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log"
+        )
+
+    assert count == 1
+    assert mock_dl.call_count == 1
+
+
+# --- Slack通知 ---------------------------------------------------------------
+
+
+def test_format_bytes() -> None:
+    assert fetch_documents.format_bytes(500 * 1024) == "0.5MB"
+    assert fetch_documents.format_bytes(2 * 1024 * 1024 * 1024) == "2.0GB"
+
+
+def test_build_slack_message_success() -> None:
+    stats = fetch_documents.RunStats(
+        start=datetime.date(2026, 8, 24), end=datetime.date(2026, 8, 26),
+        days_processed=["2026-08-24", "2026-08-25", "2026-08-26"],
+        downloaded_count=711, downloaded_bytes=128_400_000, rate_limit_retries=2,
+    )
+    message = fetch_documents.build_slack_message(stats, free_bytes=421_300_000_000)
+    assert message.startswith("✅")
+    assert "3日処理" in message
+    assert "711件" in message
+    assert "429発生: 2回" in message
+
+
+def test_build_slack_message_failure_includes_error_detail() -> None:
+    stats = fetch_documents.RunStats(
+        start=datetime.date(2026, 8, 24), end=datetime.date(2026, 8, 26),
+        days_processed=["2026-08-24", "2026-08-25", "2026-08-26"],
+        days_failed={"2026-08-25": "EDINET APIエラー status=500 message=boom"},
+    )
+    message = fetch_documents.build_slack_message(stats, free_bytes=0)
+    assert message.startswith("❌")
+    assert "1/3日" in message
+    assert "2026-08-25" in message
+    assert "status=500" in message
+
+
+def test_send_slack_notification_failure_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=OSError("network down")):
+        fetch_documents.send_slack_notification("https://hooks.slack.com/x", "hello", TEST_LOGGER)
+    # 例外が上がらなければOK
+
+
+def test_send_slack_notification_posts_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_resp = MagicMock()
+    mock_resp.__enter__.return_value = mock_resp
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(req: Any, timeout: float = 10) -> MagicMock:
+        captured["url"] = req.full_url
+        captured["data"] = json.loads(req.data.decode("utf-8"))
+        return mock_resp
+
+    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake_urlopen):
+        fetch_documents.send_slack_notification("https://hooks.slack.com/x", "hello", TEST_LOGGER)
+
+    assert captured["url"] == "https://hooks.slack.com/x"
+    assert captured["data"] == {"text": "hello"}
