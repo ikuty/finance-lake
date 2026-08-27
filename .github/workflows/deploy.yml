@@ -32,7 +32,12 @@ jobs:
           host: ${{ secrets.MAC_MINI_HOST }}
           username: ${{ secrets.MAC_MINI_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: docker pull ghcr.io/${{ github.repository_owner }}/edinet-dl:latest
+          # edinet-dl.serviceは`edinet-dl:latest`という（レジストリ接頭辞の無い）ローカルタグを
+          # 参照しているため、pull後に同じタグへ付け替える。付け替えを忘れるとpullが成功しても
+          # 実際に動くイメージは更新されない（2026-08-27に実機で確認済みの不具合）。
+          script: |
+            docker pull ghcr.io/${{ github.repository_owner }}/edinet-dl:latest
+            docker tag ghcr.io/${{ github.repository_owner }}/edinet-dl:latest edinet-dl:latest
 
 # docker run --rm 方式（コンテナ内にデーモンを置かない）のため、pull後の再起動や
 # サービス再読み込みは不要。次回のsystemdタイマー実行から新しいイメージが使われる。

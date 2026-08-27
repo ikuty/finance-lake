@@ -109,3 +109,18 @@ GitHub Actions Secretsに秘密鍵を保存し、ワークフロー内でTailsca
   紐づくパッケージは`GITHUB_TOKEN`でのpush時点で自動的にPublicになっており、想定していた
   「手動でPublicに切り替える」作業は不要だった（当初の想定が誤りだったため、この節を修正）
 - 初回10年分バックフィルの実行: 未対応
+
+## 不具合修正の記録: `deploy.yml`のイメージタグ不一致（2026-08-27）
+
+`deploy.yml`初回実行時、`docker pull`は成功したが、実際に`edinet-dl.service`が起動するイメージが
+更新されないという不具合を実機で発見した。
+
+**原因**: `deploy.yml`は`ghcr.io/<owner>/edinet-dl:latest`というタグでpullしていたが、
+`edinet-dl.service`のExecStartは（`mac_mini_setup_runbook.md`の初回セットアップでローカル
+ビルドした際に付けた）レジストリ接頭辞の無い`edinet-dl:latest`というタグを参照していた。
+Dockerではこの2つは別のローカルタグとして扱われるため、`docker pull`で新しいイメージを
+取得しても、systemdサービスが参照する`edinet-dl:latest`タグ自体は古いイメージを指したまま
+だった。`docker images`で2つのタグが別々のIMAGE IDを指していることを確認して発覚した。
+
+**修正**: `deploy.yml`の`docker pull`の直後に`docker tag ghcr.io/<owner>/edinet-dl:latest
+edinet-dl:latest`を追加し、pull後に必ずローカルタグを付け替えるようにした。
