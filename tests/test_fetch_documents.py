@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import datetime
+import gzip
+import io
 import json
 import logging
 import sys
 import time
 import urllib.error
+import zipfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -178,45 +181,90 @@ def test_fetch_day_retries_on_embedded_429_status(monkeypatch: pytest.MonkeyPatc
     assert stats.rate_limit_retries == 1
 
 
-# --- doc_file_path / save_atomic ------------------------------------------------
+# --- doc_output_path / save_atomic ------------------------------------------------
 
 
-def test_doc_file_path_naming(tmp_path: Path) -> None:
-    path = fetch_documents.doc_file_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 1)
-    assert path == tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl.zip"
+def test_doc_output_path_naming(tmp_path: Path) -> None:
+    path_xbrl = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 1)
+    assert path_xbrl == tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl"  # ディレクトリ
 
-    path_pdf = fetch_documents.doc_file_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 2)
-    assert path_pdf.name == "S100YVG3_pdf.pdf"
+    path_csv = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 5)
+    assert path_csv == tmp_path / "2026-08-13" / "E04693" / "S100YVG3_csv"  # ディレクトリ
+
+    path_pdf = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 2)
+    assert path_pdf.name == "S100YVG3_pdf.pdf"  # 単一ファイル
 
 
 def test_save_atomic_writes_file(tmp_path: Path) -> None:
-    dest = tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl.zip"
-    fetch_documents.save_atomic(dest, b"zip-bytes")
-    assert dest.read_bytes() == b"zip-bytes"
+    dest = tmp_path / "2026-08-13" / "E04693" / "S100YVG3_pdf.pdf"
+    fetch_documents.save_atomic(dest, b"pdf-bytes")
+    assert dest.read_bytes() == b"pdf-bytes"
     assert not (dest.parent / (dest.name + ".tmp")).exists()
 
 
 def test_save_atomic_leaves_no_partial_file_on_write_failure(tmp_path: Path) -> None:
-    dest = tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl.zip"
+    dest = tmp_path / "2026-08-13" / "E04693" / "S100YVG3_pdf.pdf"
     dest.parent.mkdir(parents=True)
 
     with patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")):
         with pytest.raises(OSError):
-            fetch_documents.save_atomic(dest, b"zip-bytes")
+            fetch_documents.save_atomic(dest, b"pdf-bytes")
 
     assert not dest.exists()
     assert not (dest.parent / (dest.name + ".tmp")).exists()
 
 
+# --- extract_and_gzip --------------------------------------------------------------
+
+
+def make_zip_bytes(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_extract_and_gzip_writes_each_file_individually_compressed(tmp_path: Path) -> None:
+    zip_bytes = make_zip_bytes({
+        "XBRL_TO_CSV/honbun.csv": b"a,b,c\n1,2,3\n",
+        "XBRL_TO_CSV/audit.csv": b"x,y\n9,9\n",
+    })
+    dest_dir = tmp_path / "S100AAAA_csv"
+
+    file_count, total_bytes = fetch_documents.extract_and_gzip(zip_bytes, dest_dir)
+
+    assert file_count == 2
+    honbun_gz = dest_dir / "XBRL_TO_CSV" / "honbun.csv.gz"
+    audit_gz = dest_dir / "XBRL_TO_CSV" / "audit.csv.gz"
+    assert honbun_gz.exists() and audit_gz.exists()
+    assert gzip.decompress(honbun_gz.read_bytes()) == b"a,b,c\n1,2,3\n"
+    assert gzip.decompress(audit_gz.read_bytes()) == b"x,y\n9,9\n"
+    assert total_bytes == honbun_gz.stat().st_size + audit_gz.stat().st_size
+    assert not (dest_dir.parent / (dest_dir.name + ".tmp")).exists()
+
+
+def test_extract_and_gzip_leaves_no_partial_dir_on_failure(tmp_path: Path) -> None:
+    zip_bytes = make_zip_bytes({"a.csv": b"1,2,3\n"})
+    dest_dir = tmp_path / "S100AAAA_csv"
+
+    with patch("gzip.open", side_effect=OSError("disk full")):
+        with pytest.raises(OSError):
+            fetch_documents.extract_and_gzip(zip_bytes, dest_dir)
+
+    assert not dest_dir.exists()
+    assert not (dest_dir.parent / (dest_dir.name + ".tmp")).exists()
+
+
 # --- download_doc_files ----------------------------------------------------------
 
 
-def test_download_doc_files_skips_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_download_doc_files_skips_existing_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     stats = make_stats()
     doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "1", "pdfFlag": "0", "csvFlag": "0"}
-    dest = fetch_documents.doc_file_path(tmp_path, "2026-08-13", "E00001", "S100AAAA", 1)
-    dest.parent.mkdir(parents=True)
-    dest.write_bytes(b"already-here")
+    dest = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E00001", "S100AAAA", 1)
+    dest.mkdir(parents=True)
+    (dest / "already-here.gz").write_bytes(b"x")
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file") as mock_fetch:
@@ -224,23 +272,23 @@ def test_download_doc_files_skips_existing_file(tmp_path: Path, monkeypatch: pyt
 
     assert ok is True
     mock_fetch.assert_not_called()
-    assert dest.read_bytes() == b"already-here"  # 上書きされていない
 
 
 def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     stats = make_stats()
     doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "1", "pdfFlag": "1", "csvFlag": "0"}
+    xbrl_zip = make_zip_bytes({"XBRL/PublicDoc/a.xbrl": b"xbrl-data"})
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.fetch_document_file", return_value=b"data") as mock_fetch:
+    with patch("fetch_documents.fetch_document_file", side_effect=[xbrl_zip, b"pdf-data"]) as mock_fetch:
         ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
 
     assert ok is True
     assert mock_fetch.call_count == 2  # xbrl + pdf
-    assert stats.downloaded_count == 2
-    assert stats.downloaded_bytes == 8  # b"data" x2
-    assert (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_xbrl.zip").read_bytes() == b"data"
-    assert (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_pdf.pdf").read_bytes() == b"data"
+    assert stats.downloaded_count == 2  # 展開後1ファイル(xbrl) + pdf1ファイル
+    xbrl_gz = tmp_path / "2026-08-13" / "E00001" / "S100AAAA_xbrl" / "XBRL" / "PublicDoc" / "a.xbrl.gz"
+    assert gzip.decompress(xbrl_gz.read_bytes()) == b"xbrl-data"
+    assert (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_pdf.pdf").read_bytes() == b"pdf-data"
 
 
 def test_download_doc_files_returns_false_on_partial_failure(
@@ -248,15 +296,16 @@ def test_download_doc_files_returns_false_on_partial_failure(
 ) -> None:
     stats = make_stats()
     doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "1", "pdfFlag": "1", "csvFlag": "0"}
+    xbrl_zip = make_zip_bytes({"XBRL/PublicDoc/a.xbrl": b"xbrl-data"})
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch(
-        "fetch_documents.fetch_document_file", side_effect=[b"data", RuntimeError("boom")]
+        "fetch_documents.fetch_document_file", side_effect=[xbrl_zip, RuntimeError("boom")]
     ):
         ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
 
     assert ok is False
-    assert stats.downloaded_count == 1  # xbrlだけ成功
+    assert stats.downloaded_count == 1  # xbrl展開分だけ成功
 
 
 # --- run / process_day -----------------------------------------------------------

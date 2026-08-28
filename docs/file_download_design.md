@@ -17,13 +17,27 @@ Slack通知の実チャンネルへの着信も確認済み）。
 ## 保存先パス
 
 ```
-data/raw/{fileDate}/{edinetCode}/{docID}_{type}.{ext}
+data/raw/{fileDate}/{edinetCode}/{docID}_pdf.pdf                      ← PDF（単一ファイル）
+data/raw/{fileDate}/{edinetCode}/{docID}_xbrl/（元のzip内パス）.gz     ← XBRL（展開・個別gzip）
+data/raw/{fileDate}/{edinetCode}/{docID}_csv/（元のzip内パス）.gz      ← CSV（展開・個別gzip）
 ```
 
 CLAUDE.mdの「書類本体（実データ）の保存」の項に記載済み。日付を最上位にするのは後段の
 日次ingestが対象日のディレクトリだけを見れば済むようにするため、`edinetCode`を次階層に
-するのは人間がレイクを直接見て判別しやすくするため。`docID`はファイル名のプレフィックスと
-してのみ使う（ディレクトリは分けない）。ファイルは取得したzip/pdfをそのまま保存し、展開はしない。
+するのは人間がレイクを直接見て判別しやすくするため。`docID`はファイル名（ディレクトリ名）の
+プレフィックスとしてのみ使う。
+
+**zip展開・個別gzip圧縮の方針（2026-08-28決定）**: XBRL・CSVはEDINETからzip形式で返るが、
+DWH等での後利用を考慮し、**zipのまま保存せず展開した上で中身の各ファイルを個別にgzip圧縮**
+して保存する。DWHのローダが解凍ステップ無しに`.gz`を直接ストリーム読み込みできることを
+優先した（zipやtar.gzのようなコンテナ形式のままだと、後段で個別ファイルを扱う前に必ず
+展開ステップが必要になる）。PDFは元々zipではないため単一ファイルのまま保存する。
+
+実装は`extract_and_gzip()`。一時ディレクトリに展開・圧縮してから`os.replace`でrenameする
+ことで、中断・失敗時に不完全なディレクトリが残らないようにしている（`save_atomic`の
+一時ファイル→rename方式と同じ考え方をディレクトリ単位に拡張したもの）。冪等性の判定も
+ディレクトリの存在チェックに変わる（ディレクトリが存在する＝展開が完全に完了している、
+という保証がrenameのアトミック性によって成り立つ）。
 
 ## スクリプト構成
 
@@ -45,8 +59,9 @@ systemd unitはDockerイメージ名（`edinet-dl:latest`）経由の記述の�
   2. secCode IS NOT NULL の書類だけ対象にする
   3. 対象docIDごとに:
      - xbrlFlag/pdfFlag/csvFlag を見て、有効なtype(1,2,5)をループ
-     - 保存先パスに既にファイルが存在すればスキップ
-     - 存在しなければ書類取得APIを呼び、一時ファイル→renameでアトミックに保存
+     - 保存先パス（PDFはファイル、XBRL/CSVはディレクトリ）に既に存在すればスキップ
+     - 存在しなければ書類取得APIを呼び、PDFは一時ファイル→rename、XBRL/CSVは展開・個別
+       gzip圧縮した上で一時ディレクトリ→renameでアトミックに保存
      - 各API呼び出しの間はREQUEST_DELAYを空ける（一覧取得・書類取得すべて対象）
   4. 対象docID全件のファイルが揃っていれば fetch_progress を'done'に、
      1件でも失敗があれば'error'にする
@@ -294,8 +309,8 @@ logger.addHandler(logging.StreamHandler(sys.stderr))  # 手動実行時にター
 `/data`を丸ごとバックアップすれば、このリポジトリが生成する状態（DB・書類本体）は全て
 カバーできる。ただし以下の点に注意する:
 
-- `raw/`配下のファイルは一時ファイル→renameで書き込むため、いつバックアップを取っても
-  壊れたファイルを拾うことはない。
+- `raw/`配下は一時ファイル/一時ディレクトリ→renameで書き込むため、いつバックアップを
+  取っても壊れたファイルを拾うことはない。
 - `edinet_index.db`は、日次ジョブが書き込み中に単純コピーすると不整合な状態を拾う可能性が
   ある。日次ジョブ完了後・OSシャットダウン前のタイミングでバックアップを取るか、SQLite
   組み込みのオンラインバックアップ（`sqlite3 edinet_index.db ".backup backup.db"`）を使う。

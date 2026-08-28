@@ -16,8 +16,11 @@
 errorになった日も、後続の実行で自動的に再試行される。
 
 対象は secCode が設定されている書類（上場企業）のみ。type=1(XBRL)・type=2(PDF)・
-type=5(CSV化XBRL)の3形式を data/{fileDate}/{edinetCode}/{docID}_{type}.{ext} に
-そのまま（未展開で）保存する。個々のファイルは存在チェックによる冪等性を持ち、
+type=5(CSV化XBRL)の3形式を取得する。XBRL・CSVはEDINETからzip形式で返るが、DWH等
+での後利用を考慮し、展開した上で中身の各ファイルを個別にgzip圧縮して
+data/{fileDate}/{edinetCode}/{docID}_{type}/ 配下に保存する（PDFは元々zipでは
+ないため単一ファイルのまま data/{fileDate}/{edinetCode}/{docID}_pdf.pdf に保存）。
+個々のファイル（PDF）・ディレクトリ（XBRL/CSV）は存在チェックによる冪等性を持ち、
 DBに進捗テーブルは持たない（fetch_progressは日付単位のみ）。
 
 Usage:
@@ -38,6 +41,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import gzip
+import io
 import json
 import logging
 import os
@@ -47,6 +52,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -64,12 +70,10 @@ LIST_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
 DOC_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents"
 USER_AGENT = "Mozilla/5.0 (compatible; edinet-dl/1.0)"
 
-# 書類取得APIのtype番号 -> (ファイル名サフィックス, 拡張子)
-TYPE_EXT: dict[int, tuple[str, str]] = {
-    1: ("xbrl", "zip"),
-    2: ("pdf", "pdf"),
-    5: ("csv", "zip"),
-}
+# 書類取得APIのtype番号 -> ファイル名/ディレクトリ名のサフィックス
+TYPE_SUFFIX: dict[int, str] = {1: "xbrl", 2: "pdf", 5: "csv"}
+# zip形式で返るtype（展開して中身を個別にgzip圧縮する対象）。type=2(PDF)は元々zipでない。
+ARCHIVE_TYPES = {1, 5}
 # 書類一覧APIのフラグ項目名 -> 対応する書類取得APIのtype番号
 FLAG_TYPE: list[tuple[str, int]] = [
     ("xbrlFlag", 1),
@@ -212,9 +216,13 @@ def fetch_document_file(
     return _http_get(url, stats, max_retries=max_retries)
 
 
-def doc_file_path(data_dir: Path, file_date: str, edinet_code: str, doc_id: str, type_code: int) -> Path:
-    suffix, ext = TYPE_EXT[type_code]
-    return data_dir / file_date / edinet_code / f"{doc_id}_{suffix}.{ext}"
+def doc_output_path(data_dir: Path, file_date: str, edinet_code: str, doc_id: str, type_code: int) -> Path:
+    """type=1(XBRL)/5(CSV)は展開後の格納先ディレクトリ、type=2(PDF)は単一ファイルのパスを返す。"""
+    suffix = TYPE_SUFFIX[type_code]
+    base = data_dir / file_date / edinet_code / f"{doc_id}_{suffix}"
+    if type_code in ARCHIVE_TYPES:
+        return base
+    return base.with_suffix(".pdf")
 
 
 def save_atomic(path: Path, data: bytes) -> None:
@@ -223,6 +231,37 @@ def save_atomic(path: Path, data: bytes) -> None:
     tmp_path = path.parent / (path.name + ".tmp")
     tmp_path.write_bytes(data)
     os.replace(tmp_path, path)
+
+
+def extract_and_gzip(zip_bytes: bytes, dest_dir: Path) -> tuple[int, int]:
+    """zipのバイト列を展開し、中身の各ファイルを個別にgzip圧縮してdest_dir配下に保存する
+    （DWH等での後利用を考慮し、zipのまま保存せず展開・個別圧縮する）。一時ディレクトリに
+    書き込んでからdest_dirへrenameすることで、中断・失敗時に不完全な状態が残らないように
+    する。戻り値は(展開したファイル数, 書き込んだ合計バイト数)。"""
+    tmp_dir = dest_dir.parent / (dest_dir.name + ".tmp")
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
+    try:
+        file_count = 0
+        total_bytes = 0
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                data = zf.read(info.filename)
+                out_path = tmp_dir / (info.filename + ".gz")
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                with gzip.open(out_path, "wb") as f:
+                    f.write(data)
+                file_count += 1
+                total_bytes += out_path.stat().st_size
+        dest_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp_dir, dest_dir)
+        return file_count, total_bytes
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
 
 def download_doc_files(
@@ -242,14 +281,19 @@ def download_doc_files(
     for flag_name, type_code in FLAG_TYPE:
         if doc.get(flag_name) != "1":
             continue
-        dest = doc_file_path(data_dir, date_str, edinet_code, doc_id, type_code)
+        dest = doc_output_path(data_dir, date_str, edinet_code, doc_id, type_code)
         if dest.exists():
             continue
         try:
             body = fetch_document_file(doc_id, type_code, api_key, stats)
-            save_atomic(dest, body)
-            stats.downloaded_count += 1
-            stats.downloaded_bytes += len(body)
+            if type_code in ARCHIVE_TYPES:
+                file_count, written_bytes = extract_and_gzip(body, dest)
+                stats.downloaded_count += file_count
+                stats.downloaded_bytes += written_bytes
+            else:
+                save_atomic(dest, body)
+                stats.downloaded_count += 1
+                stats.downloaded_bytes += len(body)
         except Exception as e:
             ok = False
             logger.error(f"{date_str} {doc_id} edinetCode={edinet_code} type={type_code}: ダウンロード失敗 ({e})")
