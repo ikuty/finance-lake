@@ -19,8 +19,14 @@ Slack通知の実チャンネルへの着信も確認済み）。
 ```
 data/raw/{fileDate}/{edinetCode}/{docID}_pdf.pdf                      ← PDF（単一ファイル）
 data/raw/{fileDate}/{edinetCode}/{docID}_xbrl/（元のzip内パス）.gz     ← XBRL（展開・個別gzip）
-data/raw/{fileDate}/{edinetCode}/{docID}_csv/（元のzip内パス）.gz      ← CSV（展開・個別gzip）
+data/raw/{fileDate}/{edinetCode}/{docID}_csv/（ファイル名）.gz         ← CSV（展開・個別gzip、フラット化）
 ```
+
+CSV（type=5）のzip内部は常に`XBRL_TO_CSV/`という単一のラッパーフォルダしか持たない
+（実測: 1〜2ファイルすべてこの直下）ため、`extract_and_gzip()`の`strip_prefix`引数で
+この接頭辞を常に除去してフラットな構造にしている（2026-08-28決定、件数によらず常に除去。
+docIDごとに構造が不揃いになるのを避けるため）。XBRL（type=1）は`XBRL/PublicDoc/`・
+`XBRL/AuditDoc/`という意味のある階層を持つため除去しない。
 
 CLAUDE.mdの「書類本体（実データ）の保存」の項に記載済み。日付を最上位にするのは後段の
 日次ingestが対象日のディレクトリだけを見れば済むようにするため、`edinetCode`を次階層に

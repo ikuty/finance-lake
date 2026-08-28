@@ -74,6 +74,10 @@ USER_AGENT = "Mozilla/5.0 (compatible; edinet-dl/1.0)"
 TYPE_SUFFIX: dict[int, str] = {1: "xbrl", 2: "pdf", 5: "csv"}
 # zip形式で返るtype（展開して中身を個別にgzip圧縮する対象）。type=2(PDF)は元々zipでない。
 ARCHIVE_TYPES = {1, 5}
+# 展開時にzip内部のパスから取り除く接頭辞。CSV(type=5)は常に"XBRL_TO_CSV/"という単一の
+# ラッパーフォルダしか持たないため、フラットな構造にする（件数によらず常に除去する）。
+# XBRL(type=1)は"XBRL/PublicDoc/"・"XBRL/AuditDoc/"という意味のある階層を持つため除去しない。
+ARCHIVE_STRIP_PREFIX: dict[int, str] = {5: "XBRL_TO_CSV/"}
 # 書類一覧APIのフラグ項目名 -> 対応する書類取得APIのtype番号
 FLAG_TYPE: list[tuple[str, int]] = [
     ("xbrlFlag", 1),
@@ -233,11 +237,13 @@ def save_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp_path, path)
 
 
-def extract_and_gzip(zip_bytes: bytes, dest_dir: Path) -> tuple[int, int]:
+def extract_and_gzip(zip_bytes: bytes, dest_dir: Path, strip_prefix: str = "") -> tuple[int, int]:
     """zipのバイト列を展開し、中身の各ファイルを個別にgzip圧縮してdest_dir配下に保存する
-    （DWH等での後利用を考慮し、zipのまま保存せず展開・個別圧縮する）。一時ディレクトリに
-    書き込んでからdest_dirへrenameすることで、中断・失敗時に不完全な状態が残らないように
-    する。戻り値は(展開したファイル数, 書き込んだ合計バイト数)。"""
+    （DWH等での後利用を考慮し、zipのまま保存せず展開・個別圧縮する）。strip_prefixを指定
+    すると、zip内部のパスからその接頭辞を除去してから保存する（冗長なラッパーフォルダを
+    フラット化するため）。一時ディレクトリに書き込んでからdest_dirへrenameすることで、
+    中断・失敗時に不完全な状態が残らないようにする。戻り値は(展開したファイル数, 書き込んだ
+    合計バイト数)。"""
     tmp_dir = dest_dir.parent / (dest_dir.name + ".tmp")
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
@@ -250,7 +256,10 @@ def extract_and_gzip(zip_bytes: bytes, dest_dir: Path) -> tuple[int, int]:
                 if info.is_dir():
                     continue
                 data = zf.read(info.filename)
-                out_path = tmp_dir / (info.filename + ".gz")
+                name = info.filename
+                if strip_prefix and name.startswith(strip_prefix):
+                    name = name[len(strip_prefix):]
+                out_path = tmp_dir / (name + ".gz")
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 with gzip.open(out_path, "wb") as f:
                     f.write(data)
@@ -287,7 +296,8 @@ def download_doc_files(
         try:
             body = fetch_document_file(doc_id, type_code, api_key, stats)
             if type_code in ARCHIVE_TYPES:
-                file_count, written_bytes = extract_and_gzip(body, dest)
+                strip_prefix = ARCHIVE_STRIP_PREFIX.get(type_code, "")
+                file_count, written_bytes = extract_and_gzip(body, dest, strip_prefix=strip_prefix)
                 stats.downloaded_count += file_count
                 stats.downloaded_bytes += written_bytes
             else:

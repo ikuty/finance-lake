@@ -244,6 +244,19 @@ def test_extract_and_gzip_writes_each_file_individually_compressed(tmp_path: Pat
     assert not (dest_dir.parent / (dest_dir.name + ".tmp")).exists()
 
 
+def test_extract_and_gzip_strips_prefix_when_specified(tmp_path: Path) -> None:
+    zip_bytes = make_zip_bytes({"XBRL_TO_CSV/honbun.csv": b"a,b,c\n1,2,3\n"})
+    dest_dir = tmp_path / "S100AAAA_csv"
+
+    file_count, _ = fetch_documents.extract_and_gzip(zip_bytes, dest_dir, strip_prefix="XBRL_TO_CSV/")
+
+    assert file_count == 1
+    flat_gz = dest_dir / "honbun.csv.gz"  # XBRL_TO_CSV/ が除去されフラットになっている
+    assert flat_gz.exists()
+    assert not (dest_dir / "XBRL_TO_CSV").exists()
+    assert gzip.decompress(flat_gz.read_bytes()) == b"a,b,c\n1,2,3\n"
+
+
 def test_extract_and_gzip_leaves_no_partial_dir_on_failure(tmp_path: Path) -> None:
     zip_bytes = make_zip_bytes({"a.csv": b"1,2,3\n"})
     dest_dir = tmp_path / "S100AAAA_csv"
@@ -289,6 +302,23 @@ def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch:
     xbrl_gz = tmp_path / "2026-08-13" / "E00001" / "S100AAAA_xbrl" / "XBRL" / "PublicDoc" / "a.xbrl.gz"
     assert gzip.decompress(xbrl_gz.read_bytes()) == b"xbrl-data"
     assert (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_pdf.pdf").read_bytes() == b"pdf-data"
+
+
+def test_download_doc_files_flattens_csv_xbrl_to_csv_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stats = make_stats()
+    doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "0", "pdfFlag": "0", "csvFlag": "1"}
+    csv_zip = make_zip_bytes({"XBRL_TO_CSV/honbun.csv": b"a,b,c\n"})
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.fetch_document_file", return_value=csv_zip):
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+
+    assert ok is True
+    csv_gz = tmp_path / "2026-08-13" / "E00001" / "S100AAAA_csv" / "honbun.csv.gz"  # XBRL_TO_CSV/無し
+    assert csv_gz.exists()
+    assert not (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_csv" / "XBRL_TO_CSV").exists()
 
 
 def test_download_doc_files_returns_false_on_partial_failure(
