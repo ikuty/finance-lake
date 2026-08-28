@@ -382,6 +382,30 @@ def test_process_day_marks_done_when_all_downloads_succeed(
     assert stats.days_failed == {}
 
 
+def test_process_day_logs_progress_every_n_docs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    stats = make_stats()
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    n_docs = fetch_documents.PROGRESS_LOG_INTERVAL_DOCS + 5  # 間隔を1回だけ跨ぐ件数
+    data = {
+        "results": [
+            {"docID": f"S1{i:06d}", "edinetCode": "E00001", "secCode": "12340"}
+            for i in range(n_docs)
+        ]
+    }
+    with patch("fetch_documents.fetch_day", return_value=data), \
+         patch("fetch_documents.download_doc_files", return_value=True), \
+         patch.object(TEST_LOGGER, "info") as mock_info:
+        fetch_documents.process_day(conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log")
+
+    progress_calls = [
+        call for call in mock_info.call_args_list if "進捗" in call.args[0]
+    ]
+    assert len(progress_calls) == 1
+    assert f"{fetch_documents.PROGRESS_LOG_INTERVAL_DOCS}/{n_docs}件" in progress_calls[0].args[0]
+
+
 def test_process_day_marks_error_when_a_download_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

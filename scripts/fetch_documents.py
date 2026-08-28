@@ -65,6 +65,8 @@ DEFAULT_DELAY = 1.2
 DEFAULT_DAYS_WINDOW = 3
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB
 LOG_BACKUP_COUNT = 5  # 最大5世代 ≒ 合計25MB程度
+PROGRESS_LOG_INTERVAL_DOCS = 20  # 日内の処理進捗ログを出す間隔（件数）
+PROGRESS_LOG_INTERVAL_SECONDS = 30.0  # 日内の処理進捗ログを出す間隔（秒、いずれか早い方）
 
 LIST_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
 DOC_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents"
@@ -334,10 +336,18 @@ def process_day(
     logger.info(f"{date_str}: 一覧{len(all_results)}件 / 対象{len(targets)}件")
 
     failed_doc_ids: list[str] = []
-    for doc in targets:
+    day_start_downloaded_count = stats.downloaded_count
+    last_progress_at = time.monotonic()
+    for i, doc in enumerate(targets, start=1):
         ok = download_doc_files(doc, date_str, data_dir, api_key, delay, stats, logger)
         if not ok:
             failed_doc_ids.append(doc["docID"])
+
+        now = time.monotonic()
+        if i % PROGRESS_LOG_INTERVAL_DOCS == 0 or now - last_progress_at >= PROGRESS_LOG_INTERVAL_SECONDS:
+            files_so_far = stats.downloaded_count - day_start_downloaded_count
+            logger.info(f"{date_str}: 進捗 {i}/{len(targets)}件処理済み（ダウンロード{files_so_far}ファイル）")
+            last_progress_at = now
 
     elapsed = time.monotonic() - day_start
     logger.info(
