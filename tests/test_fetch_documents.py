@@ -5,6 +5,7 @@ import gzip
 import io
 import json
 import logging
+import socket
 import sys
 import time
 import urllib.error
@@ -28,6 +29,27 @@ def make_response(status: str, results: list[dict[str, Any]]) -> bytes:
 
 def make_stats() -> fetch_documents.RunStats:
     return fetch_documents.RunStats(start=datetime.date(2026, 8, 13), end=datetime.date(2026, 8, 13))
+
+
+# --- force_ipv4 ---------------------------------------------------------------
+
+
+def test_force_ipv4_always_requests_af_inet(monkeypatch: pytest.MonkeyPatch) -> None:
+    requested_families = []
+
+    def fake_getaddrinfo(
+        host: object, port: object, family: int = 0, type: int = 0, proto: int = 0, flags: int = 0
+    ) -> list[object]:
+        requested_families.append(family)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    fetch_documents.force_ipv4()
+
+    socket.getaddrinfo("example.com", 443, socket.AF_INET6)  # 呼び出し側がIPv6を指定しても
+    socket.getaddrinfo("example.com", 443)  # 未指定でも
+
+    assert requested_families == [socket.AF_INET, socket.AF_INET]
 
 
 # --- date_range / DB progress ------------------------------------------------

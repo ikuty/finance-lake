@@ -47,6 +47,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import time
@@ -103,6 +104,20 @@ class RunStats:
     downloaded_count: int = 0
     downloaded_bytes: int = 0
     rate_limit_retries: int = 0
+
+
+def force_ipv4() -> None:
+    """socket.getaddrinfoの名前解決結果をIPv4のみに限定する。IPv6のRouter Advertisement
+    ベースの経路がまれに一時的に消える現象（ENETUNREACH、2026-08-27・28に実機で複数回観測）
+    を回避するための対策（2026-08-28導入）。stdlibのみで完結する標準的な手法。"""
+    original_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo_ipv4_only(
+        host: Any, port: Any, family: int = 0, type: int = 0, proto: int = 0, flags: int = 0
+    ) -> Any:
+        return original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+    socket.getaddrinfo = getaddrinfo_ipv4_only
 
 
 def load_api_key() -> str:
@@ -457,6 +472,7 @@ def send_slack_notification(webhook_url: str, message: str, logger: logging.Logg
 
 
 def main() -> None:
+    force_ipv4()
     default_days = int(os.environ.get("DAYS_WINDOW", DEFAULT_DAYS_WINDOW))
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
