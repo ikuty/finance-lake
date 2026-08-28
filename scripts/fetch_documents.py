@@ -221,12 +221,15 @@ def fetch_document_file(
 
 
 def doc_output_path(data_dir: Path, file_date: str, edinet_code: str, doc_id: str, type_code: int) -> Path:
-    """type=1(XBRL)/5(CSV)は展開後の格納先ディレクトリ、type=2(PDF)は単一ファイルのパスを返す。"""
-    suffix = TYPE_SUFFIX[type_code]
-    base = data_dir / file_date / edinet_code / f"{doc_id}_{suffix}"
+    """type別のディレクトリ（xbrl/csv/pdf）を最上位にし、その下にdocIDで分ける。
+    type=1(XBRL)/5(CSV)は展開後の格納先ディレクトリ（{type}/{docID}/）、type=2(PDF)は
+    単一ファイルのパス（{type}/{docID}.pdf）を返す。docID階層を挟むのは、同一企業・同一日に
+    複数docIDがある場合に、展開後のファイル名（manifest_PublicDoc.xml等）が衝突するのを
+    防ぐため。"""
+    type_dir = data_dir / file_date / edinet_code / TYPE_SUFFIX[type_code]
     if type_code in ARCHIVE_TYPES:
-        return base
-    return base.with_suffix(".pdf")
+        return type_dir / doc_id
+    return type_dir / f"{doc_id}.pdf"
 
 
 def save_atomic(path: Path, data: bytes) -> None:

@@ -185,14 +185,15 @@ def test_fetch_day_retries_on_embedded_429_status(monkeypatch: pytest.MonkeyPatc
 
 
 def test_doc_output_path_naming(tmp_path: Path) -> None:
+    # typeが最上位、docIDはその下（同一企業・同一日の複数docID間でのファイル衝突を防ぐため）
     path_xbrl = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 1)
-    assert path_xbrl == tmp_path / "2026-08-13" / "E04693" / "S100YVG3_xbrl"  # ディレクトリ
+    assert path_xbrl == tmp_path / "2026-08-13" / "E04693" / "xbrl" / "S100YVG3"  # ディレクトリ
 
     path_csv = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 5)
-    assert path_csv == tmp_path / "2026-08-13" / "E04693" / "S100YVG3_csv"  # ディレクトリ
+    assert path_csv == tmp_path / "2026-08-13" / "E04693" / "csv" / "S100YVG3"  # ディレクトリ
 
     path_pdf = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 2)
-    assert path_pdf.name == "S100YVG3_pdf.pdf"  # 単一ファイル
+    assert path_pdf == tmp_path / "2026-08-13" / "E04693" / "pdf" / "S100YVG3.pdf"  # 単一ファイル
 
 
 def test_save_atomic_writes_file(tmp_path: Path) -> None:
@@ -299,9 +300,9 @@ def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch:
     assert ok is True
     assert mock_fetch.call_count == 2  # xbrl + pdf
     assert stats.downloaded_count == 2  # 展開後1ファイル(xbrl) + pdf1ファイル
-    xbrl_gz = tmp_path / "2026-08-13" / "E00001" / "S100AAAA_xbrl" / "XBRL" / "PublicDoc" / "a.xbrl.gz"
+    xbrl_gz = tmp_path / "2026-08-13" / "E00001" / "xbrl" / "S100AAAA" / "XBRL" / "PublicDoc" / "a.xbrl.gz"
     assert gzip.decompress(xbrl_gz.read_bytes()) == b"xbrl-data"
-    assert (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_pdf.pdf").read_bytes() == b"pdf-data"
+    assert (tmp_path / "2026-08-13" / "E00001" / "pdf" / "S100AAAA.pdf").read_bytes() == b"pdf-data"
 
 
 def test_download_doc_files_flattens_csv_xbrl_to_csv_wrapper(
@@ -316,9 +317,9 @@ def test_download_doc_files_flattens_csv_xbrl_to_csv_wrapper(
         ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
 
     assert ok is True
-    csv_gz = tmp_path / "2026-08-13" / "E00001" / "S100AAAA_csv" / "honbun.csv.gz"  # XBRL_TO_CSV/無し
+    csv_gz = tmp_path / "2026-08-13" / "E00001" / "csv" / "S100AAAA" / "honbun.csv.gz"  # XBRL_TO_CSV/無し
     assert csv_gz.exists()
-    assert not (tmp_path / "2026-08-13" / "E00001" / "S100AAAA_csv" / "XBRL_TO_CSV").exists()
+    assert not (tmp_path / "2026-08-13" / "E00001" / "csv" / "S100AAAA" / "XBRL_TO_CSV").exists()
 
 
 def test_download_doc_files_returns_false_on_partial_failure(

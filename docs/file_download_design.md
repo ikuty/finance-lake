@@ -17,21 +17,27 @@ Slack通知の実チャンネルへの着信も確認済み）。
 ## 保存先パス
 
 ```
-data/raw/{fileDate}/{edinetCode}/{docID}_pdf.pdf                      ← PDF（単一ファイル）
-data/raw/{fileDate}/{edinetCode}/{docID}_xbrl/（元のzip内パス）.gz     ← XBRL（展開・個別gzip）
-data/raw/{fileDate}/{edinetCode}/{docID}_csv/（ファイル名）.gz         ← CSV（展開・個別gzip、フラット化）
+data/raw/{fileDate}/{edinetCode}/pdf/{docID}.pdf                  ← PDF（単一ファイル）
+data/raw/{fileDate}/{edinetCode}/xbrl/{docID}/（元のzip内パス）.gz ← XBRL（展開・個別gzip）
+data/raw/{fileDate}/{edinetCode}/csv/{docID}/（ファイル名）.gz     ← CSV（展開・個別gzip、フラット化）
 ```
+
+**type（xbrl/csv/pdf）を最上位、docIDをその下に置く**（2026-08-28決定）。当初は
+`{docID}_{type}`という1階層にまとめていたが、後段でのtype単位の一括読み込み（DWHローダが
+「このtypeのファイルだけ全部読む」という使い方をしやすくする）を優先し、type別ディレクトリ
+に分けた。docID階層を挟むのは、同一企業・同一日に複数docIDがある場合に、展開後のファイル名
+（`manifest_PublicDoc.xml`等、EDINET側の命名は書類種別ごとに同名になりやすい）が衝突するのを
+防ぐため。
 
 CSV（type=5）のzip内部は常に`XBRL_TO_CSV/`という単一のラッパーフォルダしか持たない
 （実測: 1〜2ファイルすべてこの直下）ため、`extract_and_gzip()`の`strip_prefix`引数で
-この接頭辞を常に除去してフラットな構造にしている（2026-08-28決定、件数によらず常に除去。
-docIDごとに構造が不揃いになるのを避けるため）。XBRL（type=1）は`XBRL/PublicDoc/`・
-`XBRL/AuditDoc/`という意味のある階層を持つため除去しない。
+この接頭辞を常に除去してフラットな構造にしている（件数によらず常に除去。docIDごとに構造が
+不揃いになるのを避けるため）。XBRL（type=1）は`XBRL/PublicDoc/`・`XBRL/AuditDoc/`という
+意味のある階層を持つため除去しない。
 
 CLAUDE.mdの「書類本体（実データ）の保存」の項に記載済み。日付を最上位にするのは後段の
 日次ingestが対象日のディレクトリだけを見れば済むようにするため、`edinetCode`を次階層に
-するのは人間がレイクを直接見て判別しやすくするため。`docID`はファイル名（ディレクトリ名）の
-プレフィックスとしてのみ使う。
+するのは人間がレイクを直接見て判別しやすくするため。
 
 **zip展開・個別gzip圧縮の方針（2026-08-28決定）**: XBRL・CSVはEDINETからzip形式で返るが、
 DWH等での後利用を考慮し、**zipのまま保存せず展開した上で中身の各ファイルを個別にgzip圧縮**
