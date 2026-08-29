@@ -7,6 +7,11 @@
 # ExecStartは2行に分けている。1行目（docker run）が失敗すると2行目（shutdown）は実行
 # されない（診断のためマシンを起動したままにする。電源はスマートプラグが定時に遮断する）。
 #
+# --csv --pdf: 当面はCSV・PDFのみ取得し、XBRLは対象外とする（2026-08-28決定）。
+# ファンダメンタル分析の核心（財務諸表の数値項目）はCSVでカバーでき、XBRLでしか
+# 得られない補足情報（セグメント内訳・大株主・役員一覧等）が必要になった段階で
+# --xbrl を追加する。詳細はdocs/file_download_design.md参照。
+#
 # 有効化・起動確認:
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable edinet-dl.timer
@@ -21,5 +26,5 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/edinet-dl/.env -v /home/<user>/edinet-dl/data:/data edinet-dl:latest
+ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/edinet-dl/.env -v /home/<user>/edinet-dl/data:/data edinet-dl:latest --csv --pdf
 ExecStart=/sbin/shutdown -h now

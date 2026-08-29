@@ -16,17 +16,19 @@
 errorになった日も、後続の実行で自動的に再試行される。
 
 対象は secCode が設定されている書類（上場企業）のみ。type=1(XBRL)・type=2(PDF)・
-type=5(CSV化XBRL)の3形式を取得する。XBRL・CSVはEDINETからzip形式で返るが、DWH等
-での後利用を考慮し、展開した上で中身の各ファイルを個別にgzip圧縮して
-data/{fileDate}/{edinetCode}/{docID}_{type}/ 配下に保存する（PDFは元々zipでは
-ないため単一ファイルのまま data/{fileDate}/{edinetCode}/{docID}_pdf.pdf に保存）。
-個々のファイル（PDF）・ディレクトリ（XBRL/CSV）は存在チェックによる冪等性を持ち、
-DBに進捗テーブルは持たない（fetch_progressは日付単位のみ）。
+type=5(CSV化XBRL)の3形式のうち、--csv/--pdf/--xbrlで指定したものだけを取得する
+（いずれも未指定なら全形式が対象、後方互換のデフォルト）。XBRL・CSVはEDINETから
+zip形式で返るが、DWH等での後利用を考慮し、展開した上で中身の各ファイルを個別に
+gzip圧縮して data/{fileDate}/{edinetCode}/{type}/{docID}/ 配下に保存する
+（PDFは元々zipではないため単一ファイルのまま data/{fileDate}/{edinetCode}/pdf/{docID}.pdf
+に保存）。個々のファイル（PDF）・ディレクトリ（XBRL/CSV）は存在チェックによる冪等性を
+持ち、DBに進捗テーブルは持たない（fetch_progressは日付単位のみ）。
 
 Usage:
     python3 fetch_documents.py                    # DAYS_WINDOW日分（既定3日）を対象に日次実行
     python3 fetch_documents.py --start-date 2016-08-13 --end-date 2026-08-13
     python3 fetch_documents.py --days 7 --force   # 取得済みの日付も再取得
+    python3 fetch_documents.py --csv --pdf        # CSV・PDFのみ取得（XBRLは対象外）
 
 設定は環境変数から読む(Dockerの --env-file を想定):
     EDINET_API_KEY    必須。EDINET APIキー
@@ -301,13 +303,17 @@ def download_doc_files(
     delay: float,
     stats: RunStats,
     logger: logging.Logger,
+    enabled_types: set[int],
 ) -> bool:
-    """対象docIDの、フラグが立っているtypeをダウンロードする。既に存在するファイルはスキップ
-    する。全て成功（またはスキップ）すればTrue、1件でも失敗すればFalseを返す。"""
+    """対象docIDの、フラグが立っておりenabled_typesに含まれるtypeをダウンロードする。
+    既に存在するファイルはスキップする。全て成功（またはスキップ）すればTrue、1件でも
+    失敗すればFalseを返す。"""
     doc_id = doc["docID"]
     edinet_code = doc["edinetCode"]
     ok = True
     for flag_name, type_code in FLAG_TYPE:
+        if type_code not in enabled_types:
+            continue
         if doc.get(flag_name) != "1":
             continue
         dest = doc_output_path(data_dir, date_str, edinet_code, doc_id, type_code)
@@ -341,6 +347,7 @@ def process_day(
     stats: RunStats,
     logger: logging.Logger,
     log_path: str,
+    enabled_types: set[int],
 ) -> int:
     """対象日の一覧取得〜書類本体ダウンロード〜fetch_progress更新までを行う。
     戻り値はsecCode絞り込み後の対象件数。"""
@@ -354,7 +361,7 @@ def process_day(
     day_start_downloaded_count = stats.downloaded_count
     last_progress_at = time.monotonic()
     for i, doc in enumerate(targets, start=1):
-        ok = download_doc_files(doc, date_str, data_dir, api_key, delay, stats, logger)
+        ok = download_doc_files(doc, date_str, data_dir, api_key, delay, stats, logger, enabled_types)
         if not ok:
             failed_doc_ids.append(doc["docID"])
 
@@ -398,16 +405,21 @@ def run(
     data_dir: Path,
     logger: logging.Logger,
     log_path: str,
+    enabled_types: set[int],
 ) -> RunStats:
     dates = list(date_range(start, end))
     todo = [d for d in dates if force or not already_done(conn, d.isoformat())]
     stats = RunStats(start=start, end=end)
-    logger.info(f"対象期間: {start} 〜 {end}（{len(dates)}日間）/ 未取得: {len(todo)}日 / force={force}")
+    type_names = ",".join(TYPE_SUFFIX[t] for t in sorted(enabled_types))
+    logger.info(
+        f"対象期間: {start} 〜 {end}（{len(dates)}日間）/ 未取得: {len(todo)}日 / "
+        f"force={force} / 対象type: {type_names}"
+    )
 
     for i, d in enumerate(todo):
         date_str = d.isoformat()
         try:
-            process_day(conn, date_str, api_key, data_dir, delay, stats, logger, log_path)
+            process_day(conn, date_str, api_key, data_dir, delay, stats, logger, log_path, enabled_types)
         except RateLimitedError as e:
             logger.error(f"[{i + 1}/{len(todo)}] {date_str}: 中断 ({e})")
             break
@@ -471,6 +483,22 @@ def send_slack_notification(webhook_url: str, message: str, logger: logging.Logg
         logger.error(f"Slack通知の送信に失敗しました: {e}")
 
 
+def compute_enabled_types(xbrl: bool, pdf: bool, csv: bool) -> set[int]:
+    """--xbrl/--pdf/--csvのフラグから対象typeの集合を決める。いずれも未指定（すべてFalse）
+    なら全形式が対象（後方互換のデフォルト）。1つでも指定されていれば、指定されたものだけが
+    対象になる。"""
+    if not (xbrl or pdf or csv):
+        return {1, 2, 5}
+    enabled_types: set[int] = set()
+    if xbrl:
+        enabled_types.add(1)
+    if pdf:
+        enabled_types.add(2)
+    if csv:
+        enabled_types.add(5)
+    return enabled_types
+
+
 def main() -> None:
     force_ipv4()
     default_days = int(os.environ.get("DAYS_WINDOW", DEFAULT_DAYS_WINDOW))
@@ -482,7 +510,12 @@ def main() -> None:
     parser.add_argument("--start-date", type=str, help="開始日 YYYY-MM-DD（指定時は--daysより優先）")
     parser.add_argument("--end-date", type=str, help="終了日 YYYY-MM-DD（省略時は今日）")
     parser.add_argument("--force", action="store_true", help="取得済みの日付も再取得する")
+    parser.add_argument("--xbrl", action="store_true", help="XBRL(type=1)を対象にする")
+    parser.add_argument("--pdf", action="store_true", help="PDF(type=2)を対象にする")
+    parser.add_argument("--csv", action="store_true", help="CSV(type=5)を対象にする")
     args = parser.parse_args()
+
+    enabled_types = compute_enabled_types(args.xbrl, args.pdf, args.csv)
 
     today = datetime.date.today()
     if args.start_date:
@@ -505,7 +538,7 @@ def main() -> None:
     conn = init_db(db_path)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = run(conn, api_key, start, end, delay, args.force, data_dir, logger, log_path)
+    stats = run(conn, api_key, start, end, delay, args.force, data_dir, logger, log_path, enabled_types)
 
     try:
         free_bytes = shutil.disk_usage(data_dir).free

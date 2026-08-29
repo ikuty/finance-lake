@@ -31,6 +31,9 @@ def make_stats() -> fetch_documents.RunStats:
     return fetch_documents.RunStats(start=datetime.date(2026, 8, 13), end=datetime.date(2026, 8, 13))
 
 
+ALL_TYPES = {1, 2, 5}
+
+
 # --- force_ipv4 ---------------------------------------------------------------
 
 
@@ -292,6 +295,18 @@ def test_extract_and_gzip_leaves_no_partial_dir_on_failure(tmp_path: Path) -> No
     assert not (dest_dir.parent / (dest_dir.name + ".tmp")).exists()
 
 
+# --- compute_enabled_types --------------------------------------------------------
+
+
+def test_compute_enabled_types_defaults_to_all_when_none_specified() -> None:
+    assert fetch_documents.compute_enabled_types(False, False, False) == {1, 2, 5}
+
+
+def test_compute_enabled_types_restricts_to_specified_flags() -> None:
+    assert fetch_documents.compute_enabled_types(xbrl=False, pdf=True, csv=True) == {2, 5}
+    assert fetch_documents.compute_enabled_types(xbrl=True, pdf=False, csv=False) == {1}
+
+
 # --- download_doc_files ----------------------------------------------------------
 
 
@@ -304,10 +319,31 @@ def test_download_doc_files_skips_existing_directory(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file") as mock_fetch:
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
 
     assert ok is True
     mock_fetch.assert_not_called()
+
+
+def test_download_doc_files_skips_types_not_in_enabled_types(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stats = make_stats()
+    # 3つとも取得可能だが、csv・pdfのみ有効化（xbrlは除外）
+    doc = {"docID": "S100AAAA", "edinetCode": "E00001", "xbrlFlag": "1", "pdfFlag": "1", "csvFlag": "1"}
+    csv_zip = make_zip_bytes({"XBRL_TO_CSV/honbun.csv": b"a,b,c\n"})
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    with patch("fetch_documents.fetch_document_file", side_effect=[b"pdf-data", csv_zip]) as mock_fetch:
+        ok = fetch_documents.download_doc_files(
+            doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, {2, 5}
+        )
+
+    assert ok is True
+    assert mock_fetch.call_count == 2  # xbrlは呼ばれない（pdf・csvのみ）
+    called_types = [call.args[1] for call in mock_fetch.call_args_list]
+    assert 1 not in called_types
+    assert not (tmp_path / "2026-08-13" / "E00001" / "xbrl").exists()
 
 
 def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -317,7 +353,7 @@ def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch:
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file", side_effect=[xbrl_zip, b"pdf-data"]) as mock_fetch:
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
 
     assert ok is True
     assert mock_fetch.call_count == 2  # xbrl + pdf
@@ -336,7 +372,7 @@ def test_download_doc_files_flattens_csv_xbrl_to_csv_wrapper(
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file", return_value=csv_zip):
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
 
     assert ok is True
     csv_gz = tmp_path / "2026-08-13" / "E00001" / "csv" / "S100AAAA" / "honbun.csv.gz"  # XBRL_TO_CSV/無し
@@ -355,7 +391,7 @@ def test_download_doc_files_returns_false_on_partial_failure(
     with patch(
         "fetch_documents.fetch_document_file", side_effect=[xbrl_zip, RuntimeError("boom")]
     ):
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER)
+        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
 
     assert ok is False
     assert stats.downloaded_count == 1  # xbrl展開分だけ成功
@@ -374,12 +410,14 @@ def test_run_skips_already_done_dates_unless_forced(tmp_path: Path, monkeypatch:
         fetch_documents.run(
             conn, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
             delay=0, force=False, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
+            enabled_types=ALL_TYPES,
         )
         mock_fetch_day.assert_not_called()
 
         fetch_documents.run(
             conn, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
             delay=0, force=True, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
+            enabled_types=ALL_TYPES,
         )
         mock_fetch_day.assert_called_once()
 
@@ -395,7 +433,7 @@ def test_process_day_marks_done_when_all_downloads_succeed(
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=True):
         count = fetch_documents.process_day(
-            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log"
+            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES
         )
 
     assert count == 1
@@ -419,7 +457,7 @@ def test_process_day_logs_progress_every_n_docs(tmp_path: Path, monkeypatch: pyt
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=True), \
          patch.object(TEST_LOGGER, "info") as mock_info:
-        fetch_documents.process_day(conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log")
+        fetch_documents.process_day(conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES)
 
     progress_calls = [
         call for call in mock_info.call_args_list if "進捗" in call.args[0]
@@ -439,7 +477,7 @@ def test_process_day_marks_error_when_a_download_fails(
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=False):
         fetch_documents.process_day(
-            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log"
+            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES
         )
 
     assert not fetch_documents.already_done(conn, "2026-08-13")
@@ -462,7 +500,7 @@ def test_process_day_filters_out_docs_without_seccode(
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=True) as mock_dl:
         count = fetch_documents.process_day(
-            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log"
+            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES
         )
 
     assert count == 1

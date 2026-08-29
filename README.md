@@ -49,8 +49,12 @@ sudo systemctl enable --now edinet-dl.timer
 等でジョブが実行されなかった日や、一時的な失敗で`error`になった日も、この窓の範囲内なら
 次回実行時に自動的に再試行される。
 
+`--xbrl`/`--pdf`/`--csv`で対象とする書類形式を絞り込める（いずれも未指定なら全形式が対象）。
+`systemd/edinet-dl.service`では当面`--csv --pdf`のみを指定している（XBRLは対象外。詳細は
+`docs/file_download_design.md`参照）。
+
 ```
-docker run --rm --env-file .env -v "$(pwd)/data:/data" edinet-dl:latest
+docker run --rm --env-file .env -v "$(pwd)/data:/data" edinet-dl:latest --csv --pdf
 ```
 
 ## テスト・型チェック
