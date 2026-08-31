@@ -24,6 +24,11 @@ gzip圧縮して data/{fileDate}/{edinetCode}/{type}/{docID}/ 配下に保存す
 に保存）。個々のファイル（PDF）・ディレクトリ（XBRL/CSV）は存在チェックによる冪等性を
 持ち、DBに進捗テーブルは持たない（fetch_progressは日付単位のみ）。
 
+書類一覧APIの生レスポンス（secCode等で絞り込む前の全件）も、日毎に1ファイル
+data/response/document_list_{fileDate}.json として加工せず保存する。書類本体だけでは
+失われるメタデータ（docTypeCode・filerName・submitDateTime等）を、後段がEDINET APIへ
+再アクセスせずに参照できるようにするため。
+
 Usage:
     python3 fetch_documents.py                    # DAYS_WINDOW日分（既定3日）を対象に日次実行
     python3 fetch_documents.py --start-date 2016-08-13 --end-date 2026-08-13
@@ -239,6 +244,22 @@ def fetch_document_file(
     return _http_get(url, stats, max_retries=max_retries)
 
 
+def list_response_path(data_dir: Path, file_date: str) -> Path:
+    """書類一覧APIの生レスポンスの保存先。書類本体（{fileDate}/{edinetCode}/...)とは別の
+    data_dir/response/ 配下にまとめる。日毎に1ファイル、後段が同APIを再度呼ばずに
+    docID・edinetCode・secCode・filerName・docTypeCode等のメタデータへアクセスできるように
+    するため（書類本体のみでは失われる情報）。"""
+    return data_dir / "response" / f"document_list_{file_date}.json"
+
+
+def save_list_response(data_dir: Path, file_date: str, data: dict[str, Any]) -> None:
+    """一覧APIのレスポンス（secCode等で絞り込む前の全件）を加工せずJSONのまま保存する。
+    日次実行のたびに最新の内容で上書きする（同日内に後から提出される書類もあるため）。"""
+    path = list_response_path(data_dir, file_date)
+    body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    save_atomic(path, body)
+
+
 def doc_output_path(data_dir: Path, file_date: str, edinet_code: str, doc_id: str, type_code: int) -> Path:
     """type別のディレクトリ（xbrl/csv/pdf）を最上位にし、その下にdocIDで分ける。
     type=1(XBRL)/5(CSV)は展開後の格納先ディレクトリ（{type}/{docID}/）、type=2(PDF)は
@@ -353,6 +374,7 @@ def process_day(
     戻り値はsecCode絞り込み後の対象件数。"""
     day_start = time.monotonic()
     data = fetch_day(date_str, api_key, stats)
+    save_list_response(data_dir, date_str, data)
     all_results = data.get("results", [])
     targets = [r for r in all_results if r.get("secCode")]
     logger.info(f"{date_str}: 一覧{len(all_results)}件 / 対象{len(targets)}件")

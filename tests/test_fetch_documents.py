@@ -240,6 +240,34 @@ def test_save_atomic_leaves_no_partial_file_on_write_failure(tmp_path: Path) -> 
     assert not (dest.parent / (dest.name + ".tmp")).exists()
 
 
+# --- list_response_path / save_list_response ---------------------------------------
+
+
+def test_list_response_path_naming(tmp_path: Path) -> None:
+    # 書類本体（{fileDate}/{edinetCode}/...）とは別の response/ 配下にまとめる
+    path = fetch_documents.list_response_path(tmp_path, "2026-08-13")
+    assert path == tmp_path / "response" / "document_list_2026-08-13.json"
+
+
+def test_save_list_response_writes_raw_json(tmp_path: Path) -> None:
+    data = {
+        "metadata": {"status": "200"},
+        "results": [{"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340"}],
+    }
+    fetch_documents.save_list_response(tmp_path, "2026-08-13", data)
+
+    path = tmp_path / "response" / "document_list_2026-08-13.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == data
+
+
+def test_save_list_response_overwrites_on_rerun(tmp_path: Path) -> None:
+    fetch_documents.save_list_response(tmp_path, "2026-08-13", {"results": [{"docID": "OLD"}]})
+    fetch_documents.save_list_response(tmp_path, "2026-08-13", {"results": [{"docID": "NEW"}]})
+
+    path = tmp_path / "response" / "document_list_2026-08-13.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == {"results": [{"docID": "NEW"}]}
+
+
 # --- extract_and_gzip --------------------------------------------------------------
 
 
@@ -440,6 +468,10 @@ def test_process_day_marks_done_when_all_downloads_succeed(
     assert fetch_documents.already_done(conn, "2026-08-13")
     assert stats.days_processed == ["2026-08-13"]
     assert stats.days_failed == {}
+
+    # 一覧APIの生レスポンスも保存される（後段がEDINET APIへ再アクセスせずに済むように）
+    saved = json.loads((tmp_path / "response" / "document_list_2026-08-13.json").read_text(encoding="utf-8"))
+    assert saved == data
 
 
 def test_process_day_logs_progress_every_n_docs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
