@@ -15,6 +15,10 @@
 窓を1日より広く取ることで、電源障害等でジョブが実行されなかった日や、一時的な失敗で
 errorになった日も、後続の実行で自動的に再試行される。
 
+「今日」はJSTで評価する（`today_jst()`、2026-08-31修正）。edinet-dl.timerはJST 04:01:30
+（=UTC前日19:01:30）に発火するため、`datetime.date.today()`（システムTZ依存、コンテナは
+通常UTC）を使うとDAYS_WINDOWの対象期間が常に1日ずれてしまう。
+
 対象は secCode が設定されている書類（上場企業）のみ。type=1(XBRL)・type=2(PDF)・
 type=5(CSV化XBRL)の3形式のうち、--csv/--pdf/--xbrlで指定したものだけを取得する
 （いずれも未指定なら全形式が対象、後方互換のデフォルト）。XBRL・CSVはEDINETから
@@ -65,6 +69,8 @@ from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Iterator
+
+JST = datetime.timezone(datetime.timedelta(hours=9))
 
 DEFAULT_DB_PATH = "/data/edinet_index.db"
 DEFAULT_DATA_DIR = "/data/raw"
@@ -417,6 +423,14 @@ def date_range(start: datetime.date, end: datetime.date) -> Iterator[datetime.da
         d += datetime.timedelta(days=1)
 
 
+def today_jst() -> datetime.date:
+    """JSTでの「今日」を返す。datetime.date.today()はコンテナのシステムTZ（通常UTC）に
+    依存するため使わない。edinet-dl.timerはJST 04:01:30（=UTC前日19:01:30）に発火するため、
+    UTCで日付を評価すると常にJSTより1日古い日付になり、DAYS_WINDOWの対象期間が1日ずれる
+    （2026-08-31発見）。固定オフセットで計算するため、tzdataパッケージは不要。"""
+    return datetime.datetime.now(JST).date()
+
+
 def run(
     conn: sqlite3.Connection,
     api_key: str,
@@ -539,7 +553,7 @@ def main() -> None:
 
     enabled_types = compute_enabled_types(args.xbrl, args.pdf, args.csv)
 
-    today = datetime.date.today()
+    today = today_jst()
     if args.start_date:
         start = datetime.date.fromisoformat(args.start_date)
         end = datetime.date.fromisoformat(args.end_date) if args.end_date else today

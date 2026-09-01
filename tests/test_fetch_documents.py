@@ -68,6 +68,21 @@ def test_date_range_inclusive() -> None:
     ]
 
 
+def test_today_jst_uses_jst_not_system_tz(monkeypatch: pytest.MonkeyPatch) -> None:
+    # edinet-dl.timerはJST 04:01:30に発火するが、これはUTCでは前日19:01:30。
+    # date.today()（システムTZ依存、通常UTC）だと日付が1日古くなるバグを防ぐための確認。
+    fixed_utc = datetime.datetime(2026, 8, 31, 19, 1, 52, tzinfo=datetime.timezone.utc)
+
+    class FixedDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+            return fixed_utc.astimezone(tz) if tz else fixed_utc
+
+    monkeypatch.setattr(fetch_documents.datetime, "datetime", FixedDatetime)
+
+    assert fetch_documents.today_jst() == datetime.date(2026, 9, 1)
+
+
 def test_init_db_creates_tables(tmp_path: Path) -> None:
     conn = fetch_documents.init_db(tmp_path / "index.db")
     tables = {
