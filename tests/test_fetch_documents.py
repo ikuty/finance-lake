@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import datetime
 import gzip
+import http.client
 import io
 import json
 import logging
 import socket
 import sys
 import time
-import urllib.error
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -75,10 +75,14 @@ def test_today_jst_uses_jst_not_system_tz(monkeypatch: pytest.MonkeyPatch) -> No
 
     class FixedDatetime(datetime.datetime):
         @classmethod
-        def now(cls, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+        def now(cls, tz: datetime.tzinfo | None = None) -> datetime.datetime:  # type: ignore[override]
             return fixed_utc.astimezone(tz) if tz else fixed_utc
 
-    monkeypatch.setattr(fetch_documents.datetime, "datetime", FixedDatetime)
+    # fetch_documents.pyもこのテストファイルも同じdatetimeモジュールをimportしているため、
+    # モジュールオブジェクト自体を差し替えれば両方に反映される（fetch_documents.datetimeという
+    # 属性アクセス経由だとmypy strictが「暗黙の再エクスポート」として拒否するため、直接importした
+    # datetimeモジュールを操作する）。
+    monkeypatch.setattr(datetime, "datetime", FixedDatetime)
 
     assert fetch_documents.today_jst() == datetime.date(2026, 9, 1)
 
@@ -126,74 +130,130 @@ def test_store_progress_overwrites_on_rerun(tmp_path: Path) -> None:
     assert rows[0][0] == "done"
 
 
-# --- _http_get: 共通のHTTPフェッチ+リトライ -----------------------------------
+# --- EdinetHttpClient: Keep-Alive接続+共通のHTTPフェッチ・リトライ -----------------
 
 
-def _mock_urlopen_sequence(*responses: Any) -> Any:
-    def fake_urlopen(*args: object, **kwargs: object) -> MagicMock:
-        item = responses[fake_urlopen.calls]  # type: ignore[attr-defined]
-        fake_urlopen.calls += 1  # type: ignore[attr-defined]
+class _FakeHTTPResponse:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status = status
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class _FakeHTTPSConnection:
+    """http.client.HTTPSConnectionの最小限のフェイク。responsesに(status, body)または
+    例外を順に並べておくと、requestのたびに順番に返す/送出する。呼ばれたpathの記録・
+    closeされたかどうかの確認にも使う。"""
+
+    def __init__(self, responses: list[Any]) -> None:
+        self._responses = responses
+        self._index = 0
+        self.requested_paths: list[str] = []
+        self.closed = False
+
+    def request(self, method: str, path: str, body: Any = None, headers: dict[str, str] = {}) -> None:
+        self.requested_paths.append(path)
+
+    def getresponse(self) -> _FakeHTTPResponse:
+        item = self._responses[self._index]
+        self._index += 1
         if isinstance(item, Exception):
             raise item
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = item
-        mock_resp.__enter__.return_value = mock_resp
-        return mock_resp
+        status, body = item
+        return _FakeHTTPResponse(status, body)
 
-    fake_urlopen.calls = 0  # type: ignore[attr-defined]
-    return fake_urlopen
+    def close(self) -> None:
+        self.closed = True
 
 
-def test_http_get_retries_on_429_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+def make_client(*responses: Any) -> fetch_documents.EdinetHttpClient:
+    """responsesを返す（または例外を送出する）フェイク接続を、接続済みの状態で仕込んだ
+    EdinetHttpClientを返す。呼び出し側で毎回新規接続されないことの確認にも使える。"""
+    client = fetch_documents.EdinetHttpClient()
+    client._conn = _FakeHTTPSConnection(list(responses))
+    return client
+
+
+def _connection_factory(*connections: Any) -> Any:
+    """http.client.HTTPSConnectionの差し替え用。呼ばれるたびに渡された接続を順番に返す
+    （再接続のシナリオをテストするため）。"""
+    state = {"i": 0}
+
+    def factory(host: str, timeout: float = 30) -> Any:
+        conn = connections[state["i"]]
+        state["i"] += 1
+        return conn
+
+    return factory
+
+
+def test_edinet_http_client_reuses_same_connection_across_requests() -> None:
     stats = make_stats()
-    err_429 = urllib.error.HTTPError("http://x", 429, "rate limited", None, None)  # type: ignore[arg-type]
-    fake = _mock_urlopen_sequence(err_429, b"ok")
+    client = make_client((200, b"first"), (200, b"second"))
+    fake_conn = client._conn
+
+    assert client.get("/a", stats) == b"first"
+    assert client.get("/b", stats) == b"second"
+
+    assert client._conn is fake_conn  # 接続が使い回されている
+    assert isinstance(fake_conn, _FakeHTTPSConnection)
+    assert fake_conn.requested_paths == ["/a", "/b"]
+
+
+def test_edinet_http_client_retries_on_429_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    client = make_client((429, b""), (200, b"ok"))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
-        body = fetch_documents._http_get("http://example/", stats)
+    body = client.get("/x", stats)
     assert body == b"ok"
     assert stats.rate_limit_retries == 1
 
 
-def test_http_get_retries_on_network_error_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_edinet_http_client_retries_on_5xx_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     stats = make_stats()
-    fake = _mock_urlopen_sequence(urllib.error.URLError("timed out"), b"ok")
+    client = make_client((500, b""), (200, b"ok"))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
-        body = fetch_documents._http_get("http://example/", stats)
-    assert body == b"ok"
-    assert stats.rate_limit_retries == 0  # ネットワークエラーは429カウントに含めない
-
-
-def test_http_get_retries_on_5xx_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    stats = make_stats()
-    err_500 = urllib.error.HTTPError("http://x", 500, "server error", None, None)  # type: ignore[arg-type]
-    fake = _mock_urlopen_sequence(err_500, b"ok")
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
-        body = fetch_documents._http_get("http://example/", stats)
+    body = client.get("/x", stats)
     assert body == b"ok"
 
 
-def test_http_get_fails_immediately_on_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_edinet_http_client_fails_immediately_on_404(monkeypatch: pytest.MonkeyPatch) -> None:
     stats = make_stats()
-    err_404 = urllib.error.HTTPError("http://x", 404, "not found", None, None)  # type: ignore[arg-type]
-    fake = _mock_urlopen_sequence(err_404)
+    client = make_client((404, b""))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
-        with pytest.raises(RuntimeError, match="404"):
-            fetch_documents._http_get("http://example/", stats)
-    assert fake.calls == 1  # リトライしない
+    with pytest.raises(RuntimeError, match="404"):
+        client.get("/x", stats)
+    fake_conn = client._conn
+    assert isinstance(fake_conn, _FakeHTTPSConnection)
+    assert len(fake_conn.requested_paths) == 1  # リトライしない
 
 
-def test_http_get_raises_rate_limited_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_edinet_http_client_raises_rate_limited_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     stats = make_stats()
-    err_429 = urllib.error.HTTPError("http://x", 429, "rate limited", None, None)  # type: ignore[arg-type]
-    fake = _mock_urlopen_sequence(*([err_429] * 3))
+    client = make_client((429, b""), (429, b""), (429, b""))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
-        with pytest.raises(fetch_documents.RateLimitedError):
-            fetch_documents._http_get("http://example/", stats, max_retries=2)
+    with pytest.raises(fetch_documents.RateLimitedError):
+        client.get("/x", stats, max_retries=2)
+
+
+def test_edinet_http_client_reconnects_after_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    stats = make_stats()
+    fake1 = _FakeHTTPSConnection([OSError("connection reset")])
+    fake2 = _FakeHTTPSConnection([(200, b"ok")])
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    # fetch_documents.pyもこのテストファイルも同じhttp.clientモジュールをimportしているため、
+    # モジュールオブジェクト自体を差し替える（fetch_documents.http.client経由のアクセスは
+    # mypy strictが「暗黙の再エクスポート」として拒否するため）。
+    monkeypatch.setattr(http.client, "HTTPSConnection", _connection_factory(fake1, fake2))
+
+    client = fetch_documents.EdinetHttpClient()
+    body = client.get("/x", stats)
+
+    assert body == b"ok"
+    assert fake1.closed  # 壊れた接続はcloseされ、新しい接続に張り替えられる
+    assert client._conn is fake2
 
 
 # --- fetch_day -----------------------------------------------------------------
@@ -201,22 +261,20 @@ def test_http_get_raises_rate_limited_after_max_retries(monkeypatch: pytest.Monk
 
 def test_fetch_day_raises_on_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
     stats = make_stats()
-    fake = _mock_urlopen_sequence(make_response("400", []))
+    client = make_client((200, make_response("400", [])))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
-        with pytest.raises(RuntimeError, match="400"):
-            fetch_documents.fetch_day("2026-08-13", "dummy-key", stats)
+    with pytest.raises(RuntimeError, match="400"):
+        fetch_documents.fetch_day(client, "2026-08-13", "dummy-key", stats)
 
 
 def test_fetch_day_retries_on_embedded_429_status(monkeypatch: pytest.MonkeyPatch) -> None:
     stats = make_stats()
-    fake = _mock_urlopen_sequence(
-        make_response("429", []),
-        make_response("200", [{"docID": "S100AAAA"}]),
+    client = make_client(
+        (200, make_response("429", [])),
+        (200, make_response("200", [{"docID": "S100AAAA"}])),
     )
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_documents.urllib.request.urlopen", side_effect=fake):
-        data = fetch_documents.fetch_day("2026-08-13", "dummy-key", stats)
+    data = fetch_documents.fetch_day(client, "2026-08-13", "dummy-key", stats)
     assert data["results"][0]["docID"] == "S100AAAA"
     assert stats.rate_limit_retries == 1
 
@@ -362,7 +420,9 @@ def test_download_doc_files_skips_existing_directory(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file") as mock_fetch:
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
+        ok = fetch_documents.download_doc_files(
+            fetch_documents.EdinetHttpClient(), doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES
+        )
 
     assert ok is True
     mock_fetch.assert_not_called()
@@ -379,12 +439,12 @@ def test_download_doc_files_skips_types_not_in_enabled_types(
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file", side_effect=[b"pdf-data", csv_zip]) as mock_fetch:
         ok = fetch_documents.download_doc_files(
-            doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, {2, 5}
+            fetch_documents.EdinetHttpClient(), doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, {2, 5}
         )
 
     assert ok is True
     assert mock_fetch.call_count == 2  # xbrlは呼ばれない（pdf・csvのみ）
-    called_types = [call.args[1] for call in mock_fetch.call_args_list]
+    called_types = [call.args[2] for call in mock_fetch.call_args_list]  # (client, doc_id, type_code, ...)
     assert 1 not in called_types
     assert not (tmp_path / "2026-08-13" / "E00001" / "xbrl").exists()
 
@@ -396,7 +456,9 @@ def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch:
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file", side_effect=[xbrl_zip, b"pdf-data"]) as mock_fetch:
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
+        ok = fetch_documents.download_doc_files(
+            fetch_documents.EdinetHttpClient(), doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES
+        )
 
     assert ok is True
     assert mock_fetch.call_count == 2  # xbrl + pdf
@@ -415,7 +477,9 @@ def test_download_doc_files_flattens_csv_xbrl_to_csv_wrapper(
 
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     with patch("fetch_documents.fetch_document_file", return_value=csv_zip):
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
+        ok = fetch_documents.download_doc_files(
+            fetch_documents.EdinetHttpClient(), doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES
+        )
 
     assert ok is True
     csv_gz = tmp_path / "2026-08-13" / "E00001" / "csv" / "S100AAAA" / "honbun.csv.gz"  # XBRL_TO_CSV/無し
@@ -434,7 +498,9 @@ def test_download_doc_files_returns_false_on_partial_failure(
     with patch(
         "fetch_documents.fetch_document_file", side_effect=[xbrl_zip, RuntimeError("boom")]
     ):
-        ok = fetch_documents.download_doc_files(doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES)
+        ok = fetch_documents.download_doc_files(
+            fetch_documents.EdinetHttpClient(), doc, "2026-08-13", tmp_path, "key", 0, stats, TEST_LOGGER, ALL_TYPES
+        )
 
     assert ok is False
     assert stats.downloaded_count == 1  # xbrl展開分だけ成功
@@ -448,17 +514,18 @@ def test_run_skips_already_done_dates_unless_forced(tmp_path: Path, monkeypatch:
     fetch_documents.store_progress(conn, "2026-08-13", "done", 0, None)
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
+    client = fetch_documents.EdinetHttpClient()
     with patch("fetch_documents.fetch_day") as mock_fetch_day:
         mock_fetch_day.return_value = {"results": []}
         fetch_documents.run(
-            conn, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
+            conn, client, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
             delay=0, force=False, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
             enabled_types=ALL_TYPES,
         )
         mock_fetch_day.assert_not_called()
 
         fetch_documents.run(
-            conn, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
+            conn, client, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
             delay=0, force=True, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
             enabled_types=ALL_TYPES,
         )
@@ -476,7 +543,8 @@ def test_process_day_marks_done_when_all_downloads_succeed(
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=True):
         count = fetch_documents.process_day(
-            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES
+            conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
+            TEST_LOGGER, "test.log", ALL_TYPES
         )
 
     assert count == 1
@@ -504,7 +572,10 @@ def test_process_day_logs_progress_every_n_docs(tmp_path: Path, monkeypatch: pyt
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=True), \
          patch.object(TEST_LOGGER, "info") as mock_info:
-        fetch_documents.process_day(conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES)
+        fetch_documents.process_day(
+            conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
+            TEST_LOGGER, "test.log", ALL_TYPES
+        )
 
     progress_calls = [
         call for call in mock_info.call_args_list if "進捗" in call.args[0]
@@ -524,7 +595,8 @@ def test_process_day_marks_error_when_a_download_fails(
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=False):
         fetch_documents.process_day(
-            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES
+            conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
+            TEST_LOGGER, "test.log", ALL_TYPES
         )
 
     assert not fetch_documents.already_done(conn, "2026-08-13")
@@ -547,7 +619,8 @@ def test_process_day_filters_out_docs_without_seccode(
     with patch("fetch_documents.fetch_day", return_value=data), \
          patch("fetch_documents.download_doc_files", return_value=True) as mock_dl:
         count = fetch_documents.process_day(
-            conn, "2026-08-13", "key", tmp_path, 0, stats, TEST_LOGGER, "test.log", ALL_TYPES
+            conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
+            TEST_LOGGER, "test.log", ALL_TYPES
         )
 
     assert count == 1

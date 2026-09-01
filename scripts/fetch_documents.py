@@ -33,6 +33,10 @@ data/response/document_list_{fileDate}.json として加工せず保存する。
 失われるメタデータ（docTypeCode・filerName・submitDateTime等）を、後段がEDINET APIへ
 再アクセスせずに参照できるようにするため。
 
+EDINET APIへのHTTP接続はKeep-Aliveで使い回す（`EdinetHttpClient`、2026-09-01導入）。
+1日あたり数百回同一ホストへ通信するため、リクエストごとの新規TCP+TLSハンドシェイクの
+積み重ねが所要時間の大半を占めていた。
+
 Usage:
     python3 fetch_documents.py                    # DAYS_WINDOW日分（既定3日）を対象に日次実行
     python3 fetch_documents.py --start-date 2016-08-13 --end-date 2026-08-13
@@ -53,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import gzip
+import http.client
 import io
 import json
 import logging
@@ -62,13 +67,12 @@ import socket
 import sqlite3
 import sys
 import time
-import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Protocol
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -82,8 +86,9 @@ LOG_BACKUP_COUNT = 5  # 最大5世代 ≒ 合計25MB程度
 PROGRESS_LOG_INTERVAL_DOCS = 20  # 日内の処理進捗ログを出す間隔（件数）
 PROGRESS_LOG_INTERVAL_SECONDS = 30.0  # 日内の処理進捗ログを出す間隔（秒、いずれか早い方）
 
-LIST_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
-DOC_API_BASE = "https://api.edinet-fsa.go.jp/api/v2/documents"
+API_HOST = "api.edinet-fsa.go.jp"
+LIST_API_PATH = "/api/v2/documents.json"
+DOC_API_PATH = "/api/v2/documents"
 USER_AGENT = "Mozilla/5.0 (compatible; edinet-dl/1.0)"
 
 # 書類取得APIのtype番号 -> ファイル名/ディレクトリ名のサフィックス
@@ -194,38 +199,86 @@ def store_progress(
     conn.commit()
 
 
-def _http_get(url: str, stats: RunStats, max_retries: int = 5) -> bytes:
-    """共通のHTTPフェッチ+リトライ。429・ネットワークエラー/タイムアウト・5xxはリトライ対象
-    （最大5回、指数バックオフ）、それ以外の4xxは即座に失敗とする（再試行しても無駄なため）。"""
+class _HTTPResponseLike(Protocol):
+    """EdinetHttpClientが要求する最小限のレスポンスインターフェース
+    （http.client.HTTPResponseの構造的部分型）。テストではこれを満たすフェイクに差し替える。"""
+
+    status: int
+
+    def read(self) -> bytes: ...
+
+
+class _HTTPConnectionLike(Protocol):
+    """EdinetHttpClientが要求する最小限の接続インターフェース
+    （http.client.HTTPSConnectionの構造的部分型）。テストではこれを満たすフェイクに差し替える。"""
+
+    def request(self, method: str, url: str, body: Any = None, headers: dict[str, str] = ...) -> None: ...
+    def getresponse(self) -> _HTTPResponseLike: ...
+    def close(self) -> None: ...
+
+
+class EdinetHttpClient:
+    """api.edinet-fsa.go.jpへのHTTP接続をKeep-Aliveで使い回すクライアント（2026-09-01導入）。
+    urllib.request.urlopen()は呼び出しごとに新規にTCP+TLSハンドシェイクを行うが、本ジョブは
+    1日あたり数百回同一ホストへ通信するため、接続確立コストの積み重ねが所要時間の大半を
+    占めていた（2026-09-01計測: 1リクエストあたり0.1〜0.18秒のうち大半が接続確立コストと
+    推定。詳細はdocs/file_download_design.md参照）。stdlibの http.client のみで完結する
+    （新規依存なし）。同一実行内の一覧取得API・書類取得APIすべてで1本の接続を使い回す
+    （Slack通知は別ホストのため対象外、従来通りurllib.requestを使う）。"""
+
+    def __init__(self, host: str = API_HOST, timeout: float = 30) -> None:
+        self._host = host
+        self._timeout = timeout
+        self._conn: _HTTPConnectionLike | None = None
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def get(self, path: str, stats: RunStats, max_retries: int = 5) -> bytes:
+        """共通のHTTPフェッチ+リトライ。429・ネットワークエラー/タイムアウト・5xxはリトライ対象
+        （最大5回、指数バックオフ）、それ以外の4xxは即座に失敗とする（再試行しても無駄なため）。
+        接続がサーバ側のアイドルタイムアウト等で切れていた場合は、closeした上で次の試行時に
+        自動的に再接続する。"""
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                if self._conn is None:
+                    self._conn = http.client.HTTPSConnection(self._host, timeout=self._timeout)
+                self._conn.request("GET", path, headers={"User-Agent": USER_AGENT})
+                resp = self._conn.getresponse()
+                body = resp.read()
+            except (http.client.HTTPException, OSError) as e:
+                self.close()
+                if attempt > max_retries:
+                    raise RuntimeError(f"{path}: ネットワークエラーが続くためリトライ上限に達しました ({e})") from e
+                time.sleep(min(60, 2**attempt))
+                continue
+
+            if resp.status == 429 or 500 <= resp.status < 600:
+                if resp.status == 429:
+                    stats.rate_limit_retries += 1
+                if attempt > max_retries:
+                    raise RateLimitedError(f"{path}: リトライ上限に達しました (status={resp.status})")
+                time.sleep(min(60, 2**attempt))
+                continue
+
+            if resp.status >= 400:
+                raise RuntimeError(f"{path}: HTTPエラー status={resp.status}")
+
+            return body
+
+
+def fetch_day(
+    client: EdinetHttpClient, date_str: str, api_key: str, stats: RunStats, max_retries: int = 5
+) -> dict[str, Any]:
+    path = f"{LIST_API_PATH}?date={date_str}&type=2&Subscription-Key={api_key}"
     attempt = 0
     while True:
         attempt += 1
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                body: bytes = resp.read()
-                return body
-        except urllib.error.HTTPError as e:
-            retryable = e.code == 429 or 500 <= e.code < 600
-            if e.code == 429:
-                stats.rate_limit_retries += 1
-            if not retryable:
-                raise RuntimeError(f"{url}: HTTPエラー status={e.code}") from e
-            if attempt > max_retries:
-                raise RateLimitedError(f"{url}: リトライ上限に達しました (status={e.code})") from e
-            time.sleep(min(60, 2**attempt))
-        except (urllib.error.URLError, OSError) as e:
-            if attempt > max_retries:
-                raise RuntimeError(f"{url}: ネットワークエラーが続くためリトライ上限に達しました ({e})") from e
-            time.sleep(min(60, 2**attempt))
-
-
-def fetch_day(date_str: str, api_key: str, stats: RunStats, max_retries: int = 5) -> dict[str, Any]:
-    url = f"{LIST_API_BASE}?date={date_str}&type=2&Subscription-Key={api_key}"
-    attempt = 0
-    while True:
-        attempt += 1
-        body = _http_get(url, stats, max_retries=max_retries)
+        body = client.get(path, stats, max_retries=max_retries)
         data: dict[str, Any] = json.loads(body.decode("utf-8"))
         status = str(data.get("metadata", {}).get("status", "200"))
 
@@ -244,10 +297,10 @@ def fetch_day(date_str: str, api_key: str, stats: RunStats, max_retries: int = 5
 
 
 def fetch_document_file(
-    doc_id: str, type_code: int, api_key: str, stats: RunStats, max_retries: int = 5
+    client: EdinetHttpClient, doc_id: str, type_code: int, api_key: str, stats: RunStats, max_retries: int = 5
 ) -> bytes:
-    url = f"{DOC_API_BASE}/{doc_id}?type={type_code}&Subscription-Key={api_key}"
-    return _http_get(url, stats, max_retries=max_retries)
+    path = f"{DOC_API_PATH}/{doc_id}?type={type_code}&Subscription-Key={api_key}"
+    return client.get(path, stats, max_retries=max_retries)
 
 
 def list_response_path(data_dir: Path, file_date: str) -> Path:
@@ -323,6 +376,7 @@ def extract_and_gzip(zip_bytes: bytes, dest_dir: Path, strip_prefix: str = "") -
 
 
 def download_doc_files(
+    client: EdinetHttpClient,
     doc: dict[str, Any],
     date_str: str,
     data_dir: Path,
@@ -347,7 +401,7 @@ def download_doc_files(
         if dest.exists():
             continue
         try:
-            body = fetch_document_file(doc_id, type_code, api_key, stats)
+            body = fetch_document_file(client, doc_id, type_code, api_key, stats)
             if type_code in ARCHIVE_TYPES:
                 strip_prefix = ARCHIVE_STRIP_PREFIX.get(type_code, "")
                 file_count, written_bytes = extract_and_gzip(body, dest, strip_prefix=strip_prefix)
@@ -367,6 +421,7 @@ def download_doc_files(
 
 def process_day(
     conn: sqlite3.Connection,
+    client: EdinetHttpClient,
     date_str: str,
     api_key: str,
     data_dir: Path,
@@ -379,7 +434,7 @@ def process_day(
     """対象日の一覧取得〜書類本体ダウンロード〜fetch_progress更新までを行う。
     戻り値はsecCode絞り込み後の対象件数。"""
     day_start = time.monotonic()
-    data = fetch_day(date_str, api_key, stats)
+    data = fetch_day(client, date_str, api_key, stats)
     save_list_response(data_dir, date_str, data)
     all_results = data.get("results", [])
     targets = [r for r in all_results if r.get("secCode")]
@@ -389,7 +444,7 @@ def process_day(
     day_start_downloaded_count = stats.downloaded_count
     last_progress_at = time.monotonic()
     for i, doc in enumerate(targets, start=1):
-        ok = download_doc_files(doc, date_str, data_dir, api_key, delay, stats, logger, enabled_types)
+        ok = download_doc_files(client, doc, date_str, data_dir, api_key, delay, stats, logger, enabled_types)
         if not ok:
             failed_doc_ids.append(doc["docID"])
 
@@ -433,6 +488,7 @@ def today_jst() -> datetime.date:
 
 def run(
     conn: sqlite3.Connection,
+    client: EdinetHttpClient,
     api_key: str,
     start: datetime.date,
     end: datetime.date,
@@ -455,7 +511,7 @@ def run(
     for i, d in enumerate(todo):
         date_str = d.isoformat()
         try:
-            process_day(conn, date_str, api_key, data_dir, delay, stats, logger, log_path, enabled_types)
+            process_day(conn, client, date_str, api_key, data_dir, delay, stats, logger, log_path, enabled_types)
         except RateLimitedError as e:
             logger.error(f"[{i + 1}/{len(todo)}] {date_str}: 中断 ({e})")
             break
@@ -574,7 +630,11 @@ def main() -> None:
     conn = init_db(db_path)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = run(conn, api_key, start, end, delay, args.force, data_dir, logger, log_path, enabled_types)
+    client = EdinetHttpClient()
+    try:
+        stats = run(conn, client, api_key, start, end, delay, args.force, data_dir, logger, log_path, enabled_types)
+    finally:
+        client.close()
 
     try:
         free_bytes = shutil.disk_usage(data_dir).free
