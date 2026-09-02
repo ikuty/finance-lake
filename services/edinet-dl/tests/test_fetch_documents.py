@@ -282,16 +282,23 @@ def test_fetch_day_retries_on_embedded_429_status(monkeypatch: pytest.MonkeyPatc
 # --- doc_output_path / save_atomic ------------------------------------------------
 
 
+def test_date_hierarchy_dir_splits_into_yyyy_mm_dd(tmp_path: Path) -> None:
+    # 1年365個・10年3650個のディレクトリがdata_dir直下にフラットに並ぶのを避けるため
+    assert fetch_documents.date_hierarchy_dir(tmp_path, "2026-08-13") == tmp_path / "2026" / "08" / "13"
+
+
 def test_doc_output_path_naming(tmp_path: Path) -> None:
-    # typeが最上位、docIDはその下（同一企業・同一日の複数docID間でのファイル衝突を防ぐため）
+    # 日付はyyyy/mm/ddの3階層、typeはその下、docIDはさらにその下
+    # （同一企業・同一日の複数docID間でのファイル衝突を防ぐため）
+    base = tmp_path / "2026" / "08" / "13" / "E04693"
     path_xbrl = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 1)
-    assert path_xbrl == tmp_path / "2026-08-13" / "E04693" / "xbrl" / "S100YVG3"  # ディレクトリ
+    assert path_xbrl == base / "xbrl" / "S100YVG3"  # ディレクトリ
 
     path_csv = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 5)
-    assert path_csv == tmp_path / "2026-08-13" / "E04693" / "csv" / "S100YVG3"  # ディレクトリ
+    assert path_csv == base / "csv" / "S100YVG3"  # ディレクトリ
 
     path_pdf = fetch_documents.doc_output_path(tmp_path, "2026-08-13", "E04693", "S100YVG3", 2)
-    assert path_pdf == tmp_path / "2026-08-13" / "E04693" / "pdf" / "S100YVG3.pdf"  # 単一ファイル
+    assert path_pdf == base / "pdf" / "S100YVG3.pdf"  # 単一ファイル
 
 
 def test_save_atomic_writes_file(tmp_path: Path) -> None:
@@ -317,9 +324,10 @@ def test_save_atomic_leaves_no_partial_file_on_write_failure(tmp_path: Path) -> 
 
 
 def test_list_response_path_naming(tmp_path: Path) -> None:
-    # 書類本体（{fileDate}/{edinetCode}/...）とは別の response/ 配下にまとめる
+    # 書類本体（{yyyy}/{mm}/{dd}/{edinetCode}/...）とは別の response/ 配下にまとめ、
+    # 日付をyyyy/mm/ddの3階層に分ける（ファイル名にはfileDateを含めない）
     path = fetch_documents.list_response_path(tmp_path, "2026-08-13")
-    assert path == tmp_path / "response" / "document_list_2026-08-13.json"
+    assert path == tmp_path / "response" / "2026" / "08" / "13" / "document_list.json"
 
 
 def test_save_list_response_writes_raw_json(tmp_path: Path) -> None:
@@ -329,7 +337,7 @@ def test_save_list_response_writes_raw_json(tmp_path: Path) -> None:
     }
     fetch_documents.save_list_response(tmp_path, "2026-08-13", data)
 
-    path = tmp_path / "response" / "document_list_2026-08-13.json"
+    path = tmp_path / "response" / "2026" / "08" / "13" / "document_list.json"
     assert json.loads(path.read_text(encoding="utf-8")) == data
 
 
@@ -337,7 +345,7 @@ def test_save_list_response_overwrites_on_rerun(tmp_path: Path) -> None:
     fetch_documents.save_list_response(tmp_path, "2026-08-13", {"results": [{"docID": "OLD"}]})
     fetch_documents.save_list_response(tmp_path, "2026-08-13", {"results": [{"docID": "NEW"}]})
 
-    path = tmp_path / "response" / "document_list_2026-08-13.json"
+    path = tmp_path / "response" / "2026" / "08" / "13" / "document_list.json"
     assert json.loads(path.read_text(encoding="utf-8")) == {"results": [{"docID": "NEW"}]}
 
 
@@ -446,7 +454,7 @@ def test_download_doc_files_skips_types_not_in_enabled_types(
     assert mock_fetch.call_count == 2  # xbrlは呼ばれない（pdf・csvのみ）
     called_types = [call.args[2] for call in mock_fetch.call_args_list]  # (client, doc_id, type_code, ...)
     assert 1 not in called_types
-    assert not (tmp_path / "2026-08-13" / "E00001" / "xbrl").exists()
+    assert not (tmp_path / "2026" / "08" / "13" / "E00001" / "xbrl").exists()
 
 
 def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -463,9 +471,9 @@ def test_download_doc_files_downloads_missing_files(tmp_path: Path, monkeypatch:
     assert ok is True
     assert mock_fetch.call_count == 2  # xbrl + pdf
     assert stats.downloaded_count == 2  # 展開後1ファイル(xbrl) + pdf1ファイル
-    xbrl_gz = tmp_path / "2026-08-13" / "E00001" / "xbrl" / "S100AAAA" / "XBRL" / "PublicDoc" / "a.xbrl.gz"
+    xbrl_gz = tmp_path / "2026" / "08" / "13" / "E00001" / "xbrl" / "S100AAAA" / "XBRL" / "PublicDoc" / "a.xbrl.gz"
     assert gzip.decompress(xbrl_gz.read_bytes()) == b"xbrl-data"
-    assert (tmp_path / "2026-08-13" / "E00001" / "pdf" / "S100AAAA.pdf").read_bytes() == b"pdf-data"
+    assert (tmp_path / "2026" / "08" / "13" / "E00001" / "pdf" / "S100AAAA.pdf").read_bytes() == b"pdf-data"
 
 
 def test_download_doc_files_flattens_csv_xbrl_to_csv_wrapper(
@@ -482,9 +490,9 @@ def test_download_doc_files_flattens_csv_xbrl_to_csv_wrapper(
         )
 
     assert ok is True
-    csv_gz = tmp_path / "2026-08-13" / "E00001" / "csv" / "S100AAAA" / "honbun.csv.gz"  # XBRL_TO_CSV/無し
+    csv_gz = tmp_path / "2026" / "08" / "13" / "E00001" / "csv" / "S100AAAA" / "honbun.csv.gz"  # XBRL_TO_CSV/無し
     assert csv_gz.exists()
-    assert not (tmp_path / "2026-08-13" / "E00001" / "csv" / "S100AAAA" / "XBRL_TO_CSV").exists()
+    assert not (tmp_path / "2026" / "08" / "13" / "E00001" / "csv" / "S100AAAA" / "XBRL_TO_CSV").exists()
 
 
 def test_download_doc_files_returns_false_on_partial_failure(
@@ -553,7 +561,9 @@ def test_process_day_marks_done_when_all_downloads_succeed(
     assert stats.days_failed == {}
 
     # 一覧APIの生レスポンスも保存される（後段がEDINET APIへ再アクセスせずに済むように）
-    saved = json.loads((tmp_path / "response" / "document_list_2026-08-13.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (tmp_path / "response" / "2026" / "08" / "13" / "document_list.json").read_text(encoding="utf-8")
+    )
     assert saved == data
 
 

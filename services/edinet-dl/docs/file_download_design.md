@@ -30,9 +30,9 @@ Slack通知の実チャンネルへの着信も確認済み）。
 ## 保存先パス
 
 ```
-data/raw/{fileDate}/{edinetCode}/pdf/{docID}.pdf                  ← PDF（単一ファイル）
-data/raw/{fileDate}/{edinetCode}/xbrl/{docID}/（元のzip内パス）.gz ← XBRL（展開・個別gzip）
-data/raw/{fileDate}/{edinetCode}/csv/{docID}/（ファイル名）.gz     ← CSV（展開・個別gzip、フラット化）
+data/raw/{yyyy}/{mm}/{dd}/{edinetCode}/pdf/{docID}.pdf                  ← PDF（単一ファイル）
+data/raw/{yyyy}/{mm}/{dd}/{edinetCode}/xbrl/{docID}/（元のzip内パス）.gz ← XBRL（展開・個別gzip）
+data/raw/{yyyy}/{mm}/{dd}/{edinetCode}/csv/{docID}/（ファイル名）.gz     ← CSV（展開・個別gzip、フラット化）
 ```
 
 **type（xbrl/csv/pdf）を最上位、docIDをその下に置く**（2026-08-28決定）。当初は
@@ -52,6 +52,15 @@ CLAUDE.mdの「書類本体（実データ）の保存」の項に記載済み�
 日次ingestが対象日のディレクトリだけを見れば済むようにするため、`edinetCode`を次階層に
 するのは人間がレイクを直接見て判別しやすくするため。
 
+**日付を`{yyyy}/{mm}/{dd}`の3階層に分ける**（2026-09-02決定）。当初は`{fileDate}`
+（`2026-08-13`のような単一のディレクトリ名）を最上位に置いていたが、1年で365個・10年で
+3650個のディレクトリが`data/raw/`直下にフラットに並ぶことになり、人間が`ls`で一覧した際の
+見通しが悪い。`yyyy/mm/dd`に分けても、後段の日次ingestが対象日のパスを`yyyy/mm/dd`から
+機械的に組み立てられる点は変わらないため、「対象日のディレクトリだけを見れば済む」という
+設計意図は損なわれない。`response/`配下の一覧APIレスポンスも同様に`response/{yyyy}/{mm}/
+{dd}/document_list.json`とし、ファイル名から`fileDate`を除いた（ディレクトリ階層に
+含まれるため冗長）。実装は`date_hierarchy_dir()`。
+
 **zip展開・個別gzip圧縮の方針（2026-08-28決定）**: XBRL・CSVはEDINETからzip形式で返るが、
 DWH等での後利用を考慮し、**zipのまま保存せず展開した上で中身の各ファイルを個別にgzip圧縮**
 して保存する。DWHのローダが解凍ステップ無しに`.gz`を直接ストリーム読み込みできることを
@@ -67,7 +76,7 @@ DWH等での後利用を考慮し、**zipのまま保存せず展開した上で
 ## 書類一覧APIレスポンスの保存（2026-08-31決定）
 
 ```
-data/raw/response/document_list_{fileDate}.json ← 一覧APIの生レスポンス（1日1ファイル）
+data/raw/response/{yyyy}/{mm}/{dd}/document_list.json ← 一覧APIの生レスポンス（1日1ファイル）
 ```
 
 書類本体（PDF/CSV/XBRL）だけでは、`docTypeCode`・`filerName`・`secCode`・`submitDateTime`

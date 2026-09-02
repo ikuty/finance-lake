@@ -23,13 +23,15 @@ errorになった日も、後続の実行で自動的に再試行される。
 type=5(CSV化XBRL)の3形式のうち、--csv/--pdf/--xbrlで指定したものだけを取得する
 （いずれも未指定なら全形式が対象、後方互換のデフォルト）。XBRL・CSVはEDINETから
 zip形式で返るが、DWH等での後利用を考慮し、展開した上で中身の各ファイルを個別に
-gzip圧縮して data/{fileDate}/{edinetCode}/{type}/{docID}/ 配下に保存する
-（PDFは元々zipではないため単一ファイルのまま data/{fileDate}/{edinetCode}/pdf/{docID}.pdf
-に保存）。個々のファイル（PDF）・ディレクトリ（XBRL/CSV）は存在チェックによる冪等性を
-持ち、DBに進捗テーブルは持たない（fetch_progressは日付単位のみ）。
+gzip圧縮して data/{yyyy}/{mm}/{dd}/{edinetCode}/{type}/{docID}/ 配下に保存する
+（PDFは元々zipではないため単一ファイルのまま
+data/{yyyy}/{mm}/{dd}/{edinetCode}/pdf/{docID}.pdf に保存）。日付をyyyy/mm/ddの3階層に
+分けるのは、1年365個・10年3650個のディレクトリがdata_dir直下にフラットに並ぶのを避ける
+ため（2026-09-02決定）。個々のファイル（PDF）・ディレクトリ（XBRL/CSV）は存在チェックに
+よる冪等性を持ち、DBに進捗テーブルは持たない（fetch_progressは日付単位のみ）。
 
 書類一覧APIの生レスポンス（secCode等で絞り込む前の全件）も、日毎に1ファイル
-data/response/document_list_{fileDate}.json として加工せず保存する。書類本体だけでは
+data/response/{yyyy}/{mm}/{dd}/document_list.json として加工せず保存する。書類本体だけでは
 失われるメタデータ（docTypeCode・filerName・submitDateTime等）を、後段がEDINET APIへ
 再アクセスせずに参照できるようにするため。
 
@@ -303,12 +305,20 @@ def fetch_document_file(
     return client.get(path, stats, max_retries=max_retries)
 
 
+def date_hierarchy_dir(base_dir: Path, file_date: str) -> Path:
+    """日付文字列(YYYY-MM-DD)をyyyy/mm/ddの3階層ディレクトリに分解する。1年365個・
+    10年3650個のディレクトリがbase_dir直下にフラットに並ぶのを避けるため
+    （2026-09-02決定）。"""
+    year, month, day = file_date.split("-")
+    return base_dir / year / month / day
+
+
 def list_response_path(data_dir: Path, file_date: str) -> Path:
-    """書類一覧APIの生レスポンスの保存先。書類本体（{fileDate}/{edinetCode}/...)とは別の
-    data_dir/response/ 配下にまとめる。日毎に1ファイル、後段が同APIを再度呼ばずに
+    """書類一覧APIの生レスポンスの保存先。書類本体（{yyyy}/{mm}/{dd}/{edinetCode}/...)とは
+    別の data_dir/response/ 配下にまとめる。日毎に1ファイル、後段が同APIを再度呼ばずに
     docID・edinetCode・secCode・filerName・docTypeCode等のメタデータへアクセスできるように
     するため（書類本体のみでは失われる情報）。"""
-    return data_dir / "response" / f"document_list_{file_date}.json"
+    return date_hierarchy_dir(data_dir / "response", file_date) / "document_list.json"
 
 
 def save_list_response(data_dir: Path, file_date: str, data: dict[str, Any]) -> None:
@@ -325,7 +335,7 @@ def doc_output_path(data_dir: Path, file_date: str, edinet_code: str, doc_id: st
     単一ファイルのパス（{type}/{docID}.pdf）を返す。docID階層を挟むのは、同一企業・同一日に
     複数docIDがある場合に、展開後のファイル名（manifest_PublicDoc.xml等）が衝突するのを
     防ぐため。"""
-    type_dir = data_dir / file_date / edinet_code / TYPE_SUFFIX[type_code]
+    type_dir = date_hierarchy_dir(data_dir, file_date) / edinet_code / TYPE_SUFFIX[type_code]
     if type_code in ARCHIVE_TYPES:
         return type_dir / doc_id
     return type_dir / f"{doc_id}.pdf"
