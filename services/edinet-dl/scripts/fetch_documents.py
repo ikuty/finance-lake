@@ -19,6 +19,12 @@ errorになった日も、後続の実行で自動的に再試行される。
 （=UTC前日19:01:30）に発火するため、`datetime.date.today()`（システムTZ依存、コンテナは
 通常UTC）を使うとDAYS_WINDOWの対象期間が常に1日ずれてしまう。
 
+DAYS_WINDOWの対象期間の終端は「今日」ではなく**前日**（`last_complete_day_jst()`、
+2026-09-03修正）。日次ジョブは営業開始前のJST 04:01:30に実行されるため、「今日」を
+対象に含めても一覧APIは常に0件を返す。この0件がfetch_progressに`done`として確定記録
+されると、`already_done()`により当日の本当のデータ（その日の営業時間中に提出される分）
+が翌日以降も二度と自動取得されなくなる不具合があった。
+
 対象は secCode が設定されている書類（上場企業）のみ。type=1(XBRL)・type=2(PDF)・
 type=5(CSV化XBRL)の3形式のうち、--csv/--pdf/--xbrlで指定したものだけを取得する
 （いずれも未指定なら全形式が対象、後方互換のデフォルト）。XBRL・CSVはEDINETから
@@ -496,6 +502,15 @@ def today_jst() -> datetime.date:
     return datetime.datetime.now(JST).date()
 
 
+def last_complete_day_jst() -> datetime.date:
+    """取得対象として安全な「最後の完結した日」＝前日を返す。日次ジョブはJST 04:01:30
+    （その日の営業開始前）に実行されるため、「今日」を対象に含めても一覧APIは常に0件を
+    返す。この0件が`fetch_progress`に`done`としてそのまま確定記録されてしまうと、
+    `already_done()`により当日の本当のデータ（その日の営業時間中に提出される分）が
+    翌日以降も二度と自動取得されなくなる（2026-09-03発見）。"""
+    return today_jst() - datetime.timedelta(days=1)
+
+
 def run(
     conn: sqlite3.Connection,
     client: EdinetHttpClient,
@@ -607,10 +622,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--days", type=int, default=default_days,
-        help=f"今日から遡って何日分を対象にするか（省略時は環境変数DAYS_WINDOW、既定{default_days}）",
+        help=f"前日から遡って何日分を対象にするか（省略時は環境変数DAYS_WINDOW、既定{default_days}）",
     )
     parser.add_argument("--start-date", type=str, help="開始日 YYYY-MM-DD（指定時は--daysより優先）")
-    parser.add_argument("--end-date", type=str, help="終了日 YYYY-MM-DD（省略時は今日）")
+    parser.add_argument("--end-date", type=str, help="終了日 YYYY-MM-DD（省略時は前日）")
     parser.add_argument("--force", action="store_true", help="取得済みの日付も再取得する")
     parser.add_argument("--xbrl", action="store_true", help="XBRL(type=1)を対象にする")
     parser.add_argument("--pdf", action="store_true", help="PDF(type=2)を対象にする")
@@ -619,13 +634,13 @@ def main() -> None:
 
     enabled_types = compute_enabled_types(args.xbrl, args.pdf, args.csv)
 
-    today = today_jst()
+    last_complete_day = last_complete_day_jst()
     if args.start_date:
         start = datetime.date.fromisoformat(args.start_date)
-        end = datetime.date.fromisoformat(args.end_date) if args.end_date else today
+        end = datetime.date.fromisoformat(args.end_date) if args.end_date else last_complete_day
     elif args.days:
-        end = today
-        start = today - datetime.timedelta(days=args.days - 1)
+        end = last_complete_day
+        start = last_complete_day - datetime.timedelta(days=args.days - 1)
     else:
         parser.error("--days か --start-date のいずれかを指定してください")
 

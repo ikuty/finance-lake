@@ -87,6 +87,22 @@ def test_today_jst_uses_jst_not_system_tz(monkeypatch: pytest.MonkeyPatch) -> No
     assert fetch_documents.today_jst() == datetime.date(2026, 9, 1)
 
 
+def test_last_complete_day_jst_is_yesterday(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 日次ジョブは営業開始前のJST 04:01:30に実行されるため、「今日」を対象に含めても
+    # 一覧APIは常に0件を返す。取得対象の終端は前日でなければならない（2026-09-03発見）。
+    fixed_utc = datetime.datetime(2026, 9, 2, 19, 1, 52, tzinfo=datetime.timezone.utc)
+
+    class FixedDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz: datetime.tzinfo | None = None) -> datetime.datetime:  # type: ignore[override]
+            return fixed_utc.astimezone(tz) if tz else fixed_utc
+
+    monkeypatch.setattr(datetime, "datetime", FixedDatetime)
+
+    assert fetch_documents.today_jst() == datetime.date(2026, 9, 3)
+    assert fetch_documents.last_complete_day_jst() == datetime.date(2026, 9, 2)
+
+
 def test_init_db_creates_tables(tmp_path: Path) -> None:
     conn = fetch_documents.init_db(tmp_path / "index.db")
     tables = {
