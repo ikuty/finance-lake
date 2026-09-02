@@ -1,6 +1,6 @@
-name: Deploy to Mac Mini
+name: edinet-dl - Deploy to Mac Mini
 
-# 設計: docs/deployment_design.md
+# 設計: services/edinet-dl/docs/deployment_design.md
 # workflow_dispatch による手動トリガーのみ。Mac Miniは電源スケジュールで稼働時間が
 # 限られているため、電源投入・Tailscale経由での到達性をユーザーが確認してから実行すること。
 #

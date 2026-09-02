@@ -1,12 +1,15 @@
-name: Build and push image
+name: edinet-dl - Build and push image
 
-# 設計: docs/deployment_design.md
-# main へのpushで自動実行。Mac Miniの稼働状態に依存しないビルド＆push工程のみを担う。
-# Mac Miniへの反映は deploy.yml（手動トリガー）で別途行う。
+# 設計: services/edinet-dl/docs/deployment_design.md
+# services/edinet-dl/配下の変更をmainにpushした際に自動実行。Mac Miniの稼働状態に依存しない
+# ビルド＆push工程のみを担う。Mac Miniへの反映は edinet-dl-deploy.yml（手動トリガー）で別途行う。
 
 on:
   push:
     branches: [main]
+    paths:
+      - services/edinet-dl/**
+      - .github/workflows/edinet-dl-build-push.yml
 
 jobs:
   build-push:
@@ -25,8 +28,8 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
-          file: docker/Dockerfile
+          context: services/edinet-dl
+          file: services/edinet-dl/docker/Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/edinet-dl:latest
 

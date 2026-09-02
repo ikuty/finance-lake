@@ -26,5 +26,5 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/edinet-dl/.env -v /home/<user>/edinet-dl/data:/data edinet-dl:latest --csv --pdf
+ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/finance-lake/services/edinet-dl/.env -v /home/<user>/finance-lake/data/edinet-dl:/data edinet-dl:latest --csv --pdf
 ExecStart=/sbin/shutdown -h now

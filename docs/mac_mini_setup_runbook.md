@@ -57,18 +57,22 @@ sudo docker run --rm hello-world
 
 ## 3. `/home`配下にディレクトリを作成し、リポジトリを配置
 
-アプリ本体・データとも`/home`配下（HDD側）に統一する方針（CLAUDE.md参照）。
+アプリ本体・データとも`/home`配下（HDD側）に統一する方針（CLAUDE.md参照）。`finance-lake`
+はレイク層モノレポで、`services/<サービス名>/`配下に各サービスが自己完結で置かれる
+（構成の詳細はルートの`CLAUDE.md`参照）。データはコードとは別に、`data/<サービス名>/`
+配下にサービスごとに置く。
 
 ```
-mkdir -p /home/<user>/edinet-dl
-cd /home/<user>/edinet-dl
+mkdir -p /home/<user>/finance-lake
+cd /home/<user>/finance-lake
 git clone <リポジトリのURL> .
-mkdir -p data
+mkdir -p data/edinet-dl
 ```
 
-## 4. `.env`の作成
+## 4. `.env`の作成（サービスごと）
 
 ```
+cd services/edinet-dl
 cp .env.example .env
 # EDINET_API_KEY に取得済みのAPIキーを設定する
 # DAYS_WINDOW・REQUEST_DELAY・DATA_DIR・LOG_PATHは既定値のままでよい
@@ -77,22 +81,26 @@ cp .env.example .env
 ## 5. Dockerイメージの用意
 
 初回はGitHub Actions（CI/CD）がまだ稼働していないため、ローカルでビルドする。CI/CD構築後の
-2回目以降の更新は`deployment_design.md`の手順（`docker pull ghcr.io/...`）に切り替わる。
+2回目以降の更新は各サービスの`deployment_design.md`の手順（`docker pull ghcr.io/...`）に
+切り替わる。ビルドコンテキストはサービスのディレクトリ（`services/edinet-dl/`）。
 
 ```
+cd /home/<user>/finance-lake/services/edinet-dl
 docker build -t edinet-dl:latest -f docker/Dockerfile .
 ```
 
 ## 6. systemd unitの登録
 
 ```
+cd /home/<user>/finance-lake/services/edinet-dl
 sudo cp systemd/edinet-dl.service systemd/edinet-dl.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now edinet-dl.timer
 ```
 
-`edinet-dl.service`・`edinet-dl.timer`内のパス（`/home/<user>/edinet-dl/...`）を、
-実際のユーザー名に合わせて事前に書き換えておくこと。
+`edinet-dl.service`・`edinet-dl.timer`内のパス（`/home/<user>/finance-lake/services/edinet-dl/...`
+・`/home/<user>/finance-lake/data/edinet-dl`）を、実際のユーザー名に合わせて事前に
+書き換えておくこと。
 
 ## 7. 動作確認
 
@@ -104,10 +112,11 @@ journalctl -u edinet-dl.service -f      # ログを確認（アプリ自体の�
 
 ## 8. 初回バックフィル（手動・1回限り）
 
-systemdタイマーには含めない。過去10年分を対象に手動実行する（README.md参照）。
+systemdタイマーには含めない。過去10年分を対象に手動実行する（`services/edinet-dl/README.md`参照）。
 
 ```
-docker run --rm --env-file .env -v "$(pwd)/data:/data" edinet-dl:latest \
+cd /home/<user>/finance-lake/services/edinet-dl
+docker run --rm --env-file .env -v "$(pwd)/../../data/edinet-dl:/data" edinet-dl:latest \
   --start-date 2016-08-13 --end-date 2026-08-25
 ```
 
