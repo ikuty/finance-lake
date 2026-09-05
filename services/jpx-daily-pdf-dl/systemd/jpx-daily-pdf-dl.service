@@ -1,0 +1,26 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdサービスユニットの例。
+# /etc/systemd/system/jpx-daily-pdf-dl.service にコピーし、自分の環境の実際の
+# ユーザー名・パスに合わせて書き換えること。
+#
+# edinet-dl.serviceとは異なり、シャットダウンのExecStartは持たない。マシンの
+# シャットダウンはedinet-dl.service側が最後に行う（両サービスが同時にshutdownを
+# 呼び合う競合を避けるため）。jpx-daily-pdf-dl.timerはedinet-dl.timerより前に
+# 発火するよう設定し、軽量な処理（一覧ページ数回＋PDF1〜2件程度）なので、
+# edinet-dl側の開始までに十分完了する見込み。万一シャットダウンに巻き込まれて
+# 中断しても、次回実行時に自動的にリトライされる（冪等性のある設計のため）。
+#
+# 有効化・起動確認:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable jpx-daily-pdf-dl.timer
+#   sudo systemctl start jpx-daily-pdf-dl.timer
+#   systemctl list-timers jpx-daily-pdf-dl.timer
+#   journalctl -u jpx-daily-pdf-dl.service
+
+[Unit]
+Description=JPX daily stock quotation fetch
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/finance-lake/services/jpx-daily-pdf-dl/.env -v /home/<user>/finance-lake/data/jpx-daily-pdf-dl:/data jpx-daily-pdf-dl:latest

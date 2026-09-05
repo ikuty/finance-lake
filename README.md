@@ -8,7 +8,7 @@
 | サービス | 内容 |
 |---|---|
 | [`services/edinet-dl`](./services/edinet-dl) | EDINET（金融庁の電子開示システム）から書類ファイルを取得・保存する |
-| [`services/jpx-daily-pdf-dl`](./services/jpx-daily-pdf-dl) | 日本取引所グループ（JPX）の日次株式相場表PDFを取得・保存する（設計中、個人利用限定） |
+| [`services/jpx-daily-pdf-dl`](./services/jpx-daily-pdf-dl) | 日本取引所グループ（JPX）の日次株式相場表PDFを取得・保存する（個人利用限定） |
 
 ## 実行基盤
 

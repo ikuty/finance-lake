@@ -1,0 +1,20 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdタイマーユニットの例。
+# /etc/systemd/system/jpx-daily-pdf-dl.timer にコピーする（jpx-daily-pdf-dl.serviceと対で使う）。
+#
+# edinet-dl.timer（04:01:30 JST）より30秒早い04:01:00 JSTに設定する。jpx-daily-pdf-dl.service
+# はマシンをシャットダウンしない（edinet-dl.service側が最後に行う）ため、実行順序を
+# ずらしておくことで、edinet-dl側の処理が始まる前に軽量な本ジョブを終わらせておく
+# （電源投入からdocker.service準備完了までの実測約15秒は、edinet-dl.timer設計時に確認済み）。
+#
+# マシンのシステムタイムゾーンはUTC（Etc/UTC）だが、Tapoの電源投入時刻はJSTで管理して
+# いるため、OnCalendarにも明示的にAsia/Tokyoを指定する。
+
+[Unit]
+Description=Run jpx-daily-pdf-dl daily fetch
+
+[Timer]
+OnCalendar=*-*-* 04:01:00 Asia/Tokyo
+Persistent=true
+
+[Install]
+WantedBy=timers.target
