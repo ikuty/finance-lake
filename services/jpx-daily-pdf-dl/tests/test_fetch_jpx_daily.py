@@ -220,6 +220,46 @@ def test_fetch_detailed_daily_skips_already_done(tmp_path: Path, monkeypatch: py
     assert mock_get.call_count == 2
 
 
+def test_fetch_detailed_daily_force_revisits_done_dates_but_skips_existing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fjd.init_db(tmp_path / "index.db")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
+    fjd.store_progress(conn, "2026-09-03", fjd.FORMAT_DETAILED_DAILY, "done", "https://x/old.pdf", None)
+    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+
+    with patch("fetch_jpx_daily._http_get", side_effect=[
+        index_html.encode("utf-8"), b"",
+    ]) as mock_get:
+        fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, force=True)
+
+    # force=Trueでdoneでも対象に含めるが、ファイルが既に存在しない今回のケースでは
+    # 実際にダウンロードが必要になるため、index/archive+PDF本体で3回呼ばれる
+    assert mock_get.call_count == 3
+
+
+def test_fetch_detailed_daily_force_skips_download_when_file_already_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fjd.init_db(tmp_path / "index.db")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
+    fjd.store_progress(conn, "2026-09-03", fjd.FORMAT_DETAILED_DAILY, "done", "https://x/old.pdf", None)
+    dest = fjd.detailed_daily_path(tmp_path, "2026-09-03")
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"existing-content")
+    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+
+    with patch("fetch_jpx_daily._http_get", side_effect=[index_html.encode("utf-8"), b""]) as mock_get:
+        fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, force=True)
+
+    # index/archiveの2回は呼ばれるが、force=Trueでも既存ファイルは再ダウンロードしない
+    # （edinet-dlの--forceと同じ意味）
+    assert mock_get.call_count == 2
+    assert dest.read_bytes() == b"existing-content"
+
+
 def test_fetch_detailed_daily_marks_error_on_download_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -274,6 +314,24 @@ def test_fetch_monthly_recent_skips_already_done_non_latest_months(tmp_path: Pat
 
     # 03.html自体の取得 + 未取得の2月分のみ。既にdoneな1月分は再取得されない
     assert mock_get.call_count == 2
+
+
+def test_fetch_monthly_recent_force_revisits_all_done_months(tmp_path: Path) -> None:
+    conn = fjd.init_db(tmp_path / "index.db")
+    fjd.store_progress(conn, "2025-01", fjd.FORMAT_MONTHLY_OHLC, "done", "https://old/1", None)
+    current_html = (
+        '<a href="/x/tvdivq0000001jan-att/202501.pdf">Jan</a>'
+        '<a href="/x/tvdivq0000001jan-att/202502.pdf">Feb</a>'
+    )
+
+    with patch("fetch_jpx_daily._http_get", side_effect=[
+        current_html.encode("utf-8"), b"%PDF-jan", b"%PDF-feb",
+    ]) as mock_get:
+        fjd.fetch_monthly_recent(conn, tmp_path, TEST_LOGGER, force=True)
+
+    # force=Trueなので既にdoneな1月分も再取得される（03.html + 1月 + 2月 = 3回）
+    assert mock_get.call_count == 3
+    assert fjd.monthly_ohlc_path(tmp_path, "2025-01").read_bytes() == b"%PDF-jan"
 
 
 def test_fetch_monthly_recent_always_refetches_the_latest_listed_month(tmp_path: Path) -> None:

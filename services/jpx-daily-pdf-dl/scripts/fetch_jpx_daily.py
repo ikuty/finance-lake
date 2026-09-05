@@ -220,12 +220,14 @@ def save_atomic(path: Path, data: bytes) -> None:
 
 
 def fetch_detailed_daily(
-    conn: sqlite3.Connection, data_dir: Path, days_window: int, logger: logging.Logger
+    conn: sqlite3.Connection, data_dir: Path, days_window: int, logger: logging.Logger, force: bool = False
 ) -> None:
     """形式C（詳細日次）を、前日から days_window 日分さかのぼって取得する。
     index.html・00-archives-01ページを読んで日付->URLの対応表を作り、対象日が
     そこに含まれていればダウンロードする（含まれない＝週末・休日で提出が無いか、
-    ローリングウィンドウの範囲外）。"""
+    ローリングウィンドウの範囲外）。force=Trueの場合、既にdoneな日付も対象に含める
+    （ただし既存ファイルは引き続き存在チェックでスキップされ、無駄な再ダウンロードは
+    発生しない。edinet-dlの--forceと同じ意味）。"""
     index_html = _http_get(f"https://{BASE_HOST}{DAILY_INDEX_PATH}").decode("utf-8", errors="ignore")
     archive_html = _http_get(f"https://{BASE_HOST}{DAILY_ARCHIVE_PATH}").decode("utf-8", errors="ignore")
     links = parse_daily_links(archive_html)
@@ -236,7 +238,7 @@ def fetch_detailed_daily(
 
     for d in date_range(start, end):
         date_str = d.isoformat()
-        if already_done(conn, date_str, FORMAT_DETAILED_DAILY):
+        if not force and already_done(conn, date_str, FORMAT_DETAILED_DAILY):
             continue
 
         rel_path = links.get(date_str)
@@ -259,7 +261,9 @@ def fetch_detailed_daily(
             logger.error(f"{date_str} ({FORMAT_DETAILED_DAILY}): 取得失敗 ({e})")
 
 
-def fetch_monthly_recent(conn: sqlite3.Connection, data_dir: Path, logger: logging.Logger) -> None:
+def fetch_monthly_recent(
+    conn: sqlite3.Connection, data_dir: Path, logger: logging.Logger, force: bool = False
+) -> None:
     """形式B（月次簡易OHLC）のうち、03.htmlに現在列挙されている月を取得する。
 
     実機確認（2026-09-05）の結果、03.htmlは「当年進行中の月」ではなく、確定済み
@@ -269,7 +273,8 @@ def fetch_monthly_recent(conn: sqlite3.Connection, data_dir: Path, logger: loggi
     仮定せず、ページに実際に列挙されている月をそのまま対象にする。
 
     列挙されている中で最新の月は、確定前でまだ更新される可能性があるため常に
-    取得し直す。それより前の月は、一度成功していれば変わらないためスキップする。
+    取得し直す。それより前の月は、一度成功していれば変わらないためスキップする
+    （force=Trueの場合はこのスキップも行わない）。
     """
     html = _http_get(f"https://{BASE_HOST}{MONTHLY_CURRENT_PATH}").decode("utf-8", errors="ignore")
     links = parse_monthly_links(html)
@@ -279,7 +284,7 @@ def fetch_monthly_recent(conn: sqlite3.Connection, data_dir: Path, logger: loggi
 
     latest_year_month = max(links)
     for year_month, rel_path in sorted(links.items()):
-        if year_month != latest_year_month and already_done(conn, year_month, FORMAT_MONTHLY_OHLC):
+        if not force and year_month != latest_year_month and already_done(conn, year_month, FORMAT_MONTHLY_OHLC):
             continue
 
         url = f"https://{BASE_HOST}{rel_path}"
@@ -301,6 +306,10 @@ def main() -> None:
         "--days", type=int, default=default_days,
         help=f"前日から遡って形式C（詳細日次）を何日分対象にするか（既定{default_days}）",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="既にdoneな期間も対象に含める（既存ファイルは引き続き存在チェックでスキップされる）",
+    )
     args = parser.parse_args()
 
     db_path = Path(os.environ.get("DB_PATH", DEFAULT_DB_PATH))
@@ -311,8 +320,8 @@ def main() -> None:
     conn = init_db(db_path)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    fetch_detailed_daily(conn, data_dir, args.days, logger)
-    fetch_monthly_recent(conn, data_dir, logger)
+    fetch_detailed_daily(conn, data_dir, args.days, logger, force=args.force)
+    fetch_monthly_recent(conn, data_dir, logger, force=args.force)
 
 
 if __name__ == "__main__":
