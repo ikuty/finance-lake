@@ -1,0 +1,38 @@
+name: jpx-daily-pdf-dl - Deploy to Mac Mini
+
+# 設計: services/jpx-daily-pdf-dl/docs/file_download_design.md
+# workflow_dispatch による手動トリガーのみ。Mac Miniは電源スケジュールで稼働時間が
+# 限られているため、電源投入・Tailscale経由での到達性をユーザーが確認してから実行すること。
+#
+# Secrets・事前準備は edinet-dl-deploy.yml と共通（Tailscale OAuthクライアント、
+# SSH_PRIVATE_KEY、MAC_MINI_HOST、MAC_MINI_USER）。
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Connect to tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Pull latest image on Mac Mini
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.MAC_MINI_HOST }}
+          username: ${{ secrets.MAC_MINI_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # jpx-daily-pdf-dl.serviceは`jpx-daily-pdf-dl:latest`という（レジストリ接頭辞の
+          # 無い）ローカルタグを参照しているため、pull後に同じタグへ付け替える
+          # （edinet-dlで実機確認済みの同種の不具合を踏まえた対応）。
+          script: |
+            docker pull ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest
+            docker tag ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest jpx-daily-pdf-dl:latest
+
+# docker run --rm 方式（コンテナ内にデーモンを置かない）のため、pull後の再起動や
+# サービス再読み込みは不要。次回のsystemdタイマー実行から新しいイメージが使われる。

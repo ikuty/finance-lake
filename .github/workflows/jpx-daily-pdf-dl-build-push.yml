@@ -1,0 +1,35 @@
+name: jpx-daily-pdf-dl - Build and push image
+
+# 設計: services/jpx-daily-pdf-dl/docs/file_download_design.md
+# services/jpx-daily-pdf-dl/配下の変更をmainにpushした際に自動実行。Mac Miniの稼働状態に
+# 依存しないビルド＆push工程のみを担う。Mac Miniへの反映は jpx-daily-pdf-dl-deploy.yml
+# （手動トリガー）で別途行う。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/jpx-daily-pdf-dl/**
+      - .github/workflows/jpx-daily-pdf-dl-build-push.yml
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: services/jpx-daily-pdf-dl
+          file: services/jpx-daily-pdf-dl/docker/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest
