@@ -89,6 +89,7 @@ DEFAULT_DATA_DIR = "/data/raw"
 DEFAULT_LOG_PATH = "/data/logs/edinet-dl.log"
 DEFAULT_DELAY = 1.2
 DEFAULT_DAYS_WINDOW = 3
+SUSPICIOUS_DROP_RATIO = 0.5  # 一覧APIの結果件数が旧記録の半分未満なら退避対象（2026-09-04導入）
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB
 LOG_BACKUP_COUNT = 5  # 最大5世代 ≒ 合計25MB程度
 PROGRESS_LOG_INTERVAL_DOCS = 20  # 日内の処理進捗ログを出す間隔（件数）
@@ -329,8 +330,26 @@ def list_response_path(data_dir: Path, file_date: str) -> Path:
 
 def save_list_response(data_dir: Path, file_date: str, data: dict[str, Any]) -> None:
     """一覧APIのレスポンス（secCode等で絞り込む前の全件）を加工せずJSONのまま保存する。
-    日次実行のたびに最新の内容で上書きする（同日内に後から提出される書類もあるため）。"""
+    日次実行のたびに最新の内容で上書きする（同日内に後から提出される書類もあるため）。
+
+    ただし、既存の記録がある場合に件数が大幅に減っていたら（旧件数の
+    SUSPICIOUS_DROP_RATIO未満）、上書きする前に旧ファイルを{path}.bak-{タイムスタンプ}
+    として退避する。一覧APIが200 OKのまま一時的に空・少件数のレスポンスを返すことが
+    実際にあった（2026-09-04、2026-04-16のバックフィル再実行時に確認。1回目・2回目は
+    対象0件、3回目でようやく本来の51件を取得できた）ため、原因調査用の証跡を残す。
+    現時点では観察のみで、リトライ・確定判定のロジックは変更していない。"""
     path = list_response_path(data_dir, file_date)
+    new_count = len(data.get("results", []))
+
+    if path.exists():
+        try:
+            old_count = len(json.loads(path.read_text(encoding="utf-8")).get("results", []))
+        except (json.JSONDecodeError, OSError):
+            old_count = 0
+        if old_count > 0 and new_count < old_count * SUSPICIOUS_DROP_RATIO:
+            timestamp = datetime.datetime.now(JST).strftime("%Y%m%dT%H%M%S")
+            shutil.copy2(path, path.with_name(f"{path.name}.bak-{timestamp}"))
+
     body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     save_atomic(path, body)
 

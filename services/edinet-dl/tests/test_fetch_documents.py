@@ -365,6 +365,48 @@ def test_save_list_response_overwrites_on_rerun(tmp_path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8")) == {"results": [{"docID": "NEW"}]}
 
 
+def test_save_list_response_backs_up_on_suspicious_drop(tmp_path: Path) -> None:
+    # 一覧APIが一時的に200 OKのまま件数の少ないレスポンスを返すことがある
+    # （2026-09-04、2026-04-16のバックフィル再実行時に実際に発生）。旧記録の半分未満に
+    # 減った場合は、上書き前に旧ファイルを退避して調査できるようにする。
+    old_data = {"results": [{"docID": f"S{i}"} for i in range(51)]}
+    fetch_documents.save_list_response(tmp_path, "2026-04-16", old_data)
+
+    new_data: dict[str, Any] = {"results": []}
+    fetch_documents.save_list_response(tmp_path, "2026-04-16", new_data)
+
+    day_dir = tmp_path / "response" / "2026" / "04" / "16"
+    path = day_dir / "document_list.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == new_data  # 新しい内容で上書きされる
+
+    backups = list(day_dir.glob("document_list.json.bak-*"))
+    assert len(backups) == 1
+    assert json.loads(backups[0].read_text(encoding="utf-8")) == old_data  # 旧内容が退避されている
+
+
+def test_save_list_response_does_not_back_up_on_small_decrease(tmp_path: Path) -> None:
+    # 取下げ等による軽微な件数減少（半分未満ではない）では退避しない
+    old_data = {"results": [{"docID": f"S{i}"} for i in range(51)]}
+    fetch_documents.save_list_response(tmp_path, "2026-04-16", old_data)
+
+    new_data = {"results": [{"docID": f"S{i}"} for i in range(49)]}
+    fetch_documents.save_list_response(tmp_path, "2026-04-16", new_data)
+
+    day_dir = tmp_path / "response" / "2026" / "04" / "16"
+    assert list(day_dir.glob("document_list.json.bak-*")) == []
+
+
+def test_save_list_response_does_not_back_up_on_increase(tmp_path: Path) -> None:
+    old_data = {"results": [{"docID": "S1"}]}
+    fetch_documents.save_list_response(tmp_path, "2026-04-16", old_data)
+
+    new_data = {"results": [{"docID": "S1"}, {"docID": "S2"}]}
+    fetch_documents.save_list_response(tmp_path, "2026-04-16", new_data)
+
+    day_dir = tmp_path / "response" / "2026" / "04" / "16"
+    assert list(day_dir.glob("document_list.json.bak-*")) == []
+
+
 # --- extract_and_gzip --------------------------------------------------------------
 
 
