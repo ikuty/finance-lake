@@ -60,15 +60,16 @@ Python 3.12（stdlib中心）を各サービスの既定言語とする。型ヒ
 する（over engineering回避）。他言語・他フレームワークが必要な場合はサービスごとに
 判断してよいが、まずはこの構成を既定とする。
 
-## 現状（2026-09-02時点）
+## 現状（2026-09-04時点）
 
 - `services/edinet-dl/`: 実装・デプロイ済み。詳細は`services/edinet-dl/README.md`・
   `services/edinet-dl/CLAUDE.md`参照。
-- 2つ目以降のレイク層サービスは未着手。
+- `services/jpx-daily-pdf-dl/`: 2つ目のレイク層サービスとして設計中（実装未着手）。
+  日本取引所グループ（JPX）の日次株式相場表PDFを取得・保存する。**個人利用限定**
+  （JPX利用規約により商用目的の二次利用・生成AIによる不適切な利用は不可のため）。
+  詳細は`services/jpx-daily-pdf-dl/docs/file_download_design.md`参照。
 
 ## 次にやること（未着手）
 
-- Mac Mini側の実際のディレクトリ構成・systemd unit・GitHub Actionsをこのモノレポ構成に
-  合わせて移行
-- 2つ目以降のレイク層サービスの検討（着手時期未定）
+- `services/jpx-daily-pdf-dl/`の実装（設計は確定済み）
 - ウェアハウス層・マート層・アプリの設計（別リポジトリ、将来着手）
