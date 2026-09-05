@@ -102,7 +102,7 @@ GitHub Actions Secretsに秘密鍵を保存し、ワークフロー内でTailsca
 - **Secrets**: `SSH_PRIVATE_KEY`・`MAC_MINI_HOST`・`MAC_MINI_USER`・`TS_OAUTH_CLIENT_ID`・
   `TS_OAUTH_SECRET`の5つとも設定済み。TailscaleのOAuthクライアントは`tag:ci`スコープの
   `Auth Keys`（Write）で作成（管理画面の「Devices」ではなく「Keys」カテゴリ配下）
-- **Mac Mini実機**: 初期セットアップ完了（[mac_mini_setup_runbook.md](./mac_mini_setup_runbook.md)参照）。
+- **Mac Mini実機**: 初期セットアップ完了（[mac_mini_setup_runbook.md](../../../docs/mac_mini_setup_runbook.md)参照）。
   Tailscale・Docker導入済み、systemdタイマー登録・実機での動作確認（`docker run`→成功時の
   シャットダウン→次回電源投入時の`setpci`自動起動）まで確認済み
 - **ghcr.ioパッケージの可視性**: `build-push.yml`実行・確認済み（2026-08-26）。公開リポジトリに
@@ -143,4 +143,5 @@ edinet-dl:latest`を追加し、pull後に必ずローカルタグを付け替�
 合わなくても、`fetch_documents.py`側の`DAYS_WINDOW`による遡り窓で翌日以降に自動的に
 再開させる。日次の本番ジョブは所要時間が短く予測可能なため、Tapo固定スケジュール＋OS側
 `shutdown`という既存の疎結合設計のままで十分と判断した。詳細は
-[mac_mini_setup_runbook.md](./mac_mini_setup_runbook.md)の前提条件を参照。
+[mac_mini_setup_runbook.md](../../../docs/mac_mini_setup_runbook.md)の前提条件を参照
+（シャットダウンは2026-09-06以降、全サービス共通の`finance-lake-shutdown.service`が担う）。

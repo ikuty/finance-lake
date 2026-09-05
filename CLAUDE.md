@@ -50,6 +50,11 @@ finance-lake/
   cron/systemdデーモンは置かない）。`OnCalendar`（固定時刻）＋`Persistent=true`を使い、
   `OnBootSec`（起動からの相対時刻）は採用しない（開発時にTailscale経由で手動起動した
   セッションでもジョブ＋シャットダウンが毎回走ってしまうのを避けるため）。
+- シャットダウンは各サービスのunitでは行わず、全サービス共通の共有unit
+  （`systemd/finance-lake-shutdown.service`）が一手に引き受ける（2026-09-06決定）。
+  各サービスのunitに`shutdown`を持たせると、「そのサービスが最後に終わる」という前提に
+  依存する非対称な設計になり、サービスが増えるほど壊れやすくなるため。共有unitは
+  `After=`で各サービスを列挙し、実行中なら待ってからシャットダウンする。
 - ネットワークは外部から遮断されたLANに配置し、Tailscaleを導入する。開発時・GitHub
   Actionsからのデプロイとも、Tailscale+SSHでの接続を前提とする。
 

@@ -184,8 +184,12 @@ CREATE TABLE fetch_progress (
   （`OnCalendar=*-*-* 04:01:30 Asia/Tokyo`）と電源投入〜シャットダウンの同じ時間枠
   （04:00〜06:00 JST）内に収める必要があるため、`jpx-daily-pdf-dl.timer`は
   `04:01:00 Asia/Tokyo`（edinet-dlより30秒早い）に設定した。`jpx-daily-pdf-dl.service`は
-  マシンをシャットダウンしない（`edinet-dl.service`側が最後に行う。両サービスが同時に
-  shutdownを呼び合う競合を避けるため）。
+  マシンをシャットダウンしない。シャットダウンは全サービス共通の共有unit
+  `finance-lake-shutdown.service`（リポジトリ直下の`systemd/`配下）が一手に引き受ける
+  （2026-09-06決定。当初はedinet-dl.service側が最後に行う想定だったが、実行時間次第では
+  それより前にshutdownが走ってしまう非対称な設計だったため、専用unitに分離した）。
+  `finance-lake-shutdown.service`は`After=edinet-dl.service jpx-daily-pdf-dl.service`
+  により、本サービスが実行中であればシャットダウンの開始を自動的に待つ。
 - **HTTP接続**: `edinet-dl`が導入したKeep-Alive接続（`EdinetHttpClient`）は、1日あたり
   数百回のリクエストが発生する状況向けの最適化だった。本サービスは1日あたり月1回の一覧
   ページ取得＋1回のPDF取得程度で頻度が低く、Keep-Alive最適化の恩恵は薄いと判断し、

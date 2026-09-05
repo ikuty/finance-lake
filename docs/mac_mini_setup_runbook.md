@@ -3,7 +3,7 @@
 Mac Mini 2012 + Ubuntu 24.04 LTSに、このリポジトリを初めてデプロイする際の手順。1回きり
 （あるいは稀な再構築時）の作業であり、対象マシンは1台のみのため、Ansible等の構成管理
 ツールは使わずランブックとして手順を記載する（詳細は
-[deployment_design.md](./deployment_design.md)参照）。
+[deployment_design.md](../services/edinet-dl/docs/deployment_design.md)参照）。
 
 対話的な作業（Tailscaleログイン等）を含むため、フルスクリプト化はしていない。コマンドは
 コピー＆ペーストして実行することを想定している。`<user>`は実際のユーザー名に読み替える。
@@ -20,7 +20,9 @@ Mac Mini 2012 + Ubuntu 24.04 LTSに、このリポジトリを初めてデプロ
   持たせたもの。`shutdown -h now`によりジョブ完了後は実質消費電力ゼロになるため、遮断時刻を
   詰める必要は無いという判断。稀に極端な繁忙日でこの時間内に収まらなくても、`DAYS_WINDOW`
   による遡り窓で翌日以降に自動的に再開される（Tapo側のAPI連携等は行わない。理由は
-  [deployment_design.md](./deployment_design.md)参照）
+  [deployment_design.md](../services/edinet-dl/docs/deployment_design.md)参照）。
+  シャットダウンは`edinet-dl.timer`単体ではなく、全サービス共通の
+  `finance-lake-shutdown.timer`（後述）が担う（2026-09-06決定）
 
 ## 1. Tailscaleの導入
 
@@ -91,16 +93,31 @@ docker build -t edinet-dl:latest -f docker/Dockerfile .
 
 ## 6. systemd unitの登録
 
+各サービスのunitに加え、リポジトリ直下の共有unit（`finance-lake-shutdown.service`・
+`.timer`）も登録する。マシンのシャットダウンはどのサービスのunitも行わず、この共有unitが
+全サービス共通で一手に引き受ける（2026-09-06決定。詳細は`systemd/finance-lake-shutdown.service`
+のコメント参照）。
+
 ```
 cd /home/<user>/finance-lake/services/edinet-dl
 sudo cp systemd/edinet-dl.service systemd/edinet-dl.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now edinet-dl.timer
+
+cd /home/<user>/finance-lake
+sudo cp systemd/finance-lake-shutdown.service systemd/finance-lake-shutdown.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now finance-lake-shutdown.timer
 ```
 
 `edinet-dl.service`・`edinet-dl.timer`内のパス（`/home/<user>/finance-lake/services/edinet-dl/...`
 ・`/home/<user>/finance-lake/data/edinet-dl`）を、実際のユーザー名に合わせて事前に
 書き換えておくこと。
+
+`finance-lake-shutdown.timer`（`OnCalendar=04:02:00 Asia/Tokyo`）は、各サービスのタイマー
+より後の時刻に設定すること。これより早いと、まだ発火していないサービスのタイマーを
+「実行中でない」と誤認し、待たずに即シャットダウンしてしまう。新しいサービスを追加した
+場合は、`finance-lake-shutdown.service`の`After=`行にそのサービス名を追加すること。
 
 ## 7. 動作確認
 

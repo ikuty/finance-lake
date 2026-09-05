@@ -1,0 +1,33 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdサービスユニットの例。
+# /etc/systemd/system/finance-lake-shutdown.service にコピーする
+# （finance-lake-shutdown.timerと対で使う）。
+#
+# 各サービス（edinet-dl.service・jpx-daily-pdf-dl.service等）はdocker runのみを行い、
+# マシンのシャットダウンはこの共有unitが一手に引き受ける（2026-09-06決定）。以前は
+# edinet-dl.serviceの2行目でshutdownを呼んでいたが、これだと「edinet-dlが最後に
+# 終わるサービスである」という前提に依存してしまい、他サービスの実行時間次第では
+# それより前にshutdownが走ってしまう非対称な設計になっていた。
+#
+# After=に列挙した各サービスが実行中であれば、systemdが本unitの開始を自動的に
+# 待たせる（純粋な順序制約のみでRequires=/Wants=は使わない。該当サービスが
+# 実行中でなければ、待たずに即座にshutdownへ進む）。将来サービスが増えた場合は
+# After=の行にサービス名を追加するだけでよい。
+#
+# 本unitのタイマー（finance-lake-shutdown.timer）は、各サービスのタイマーの発火時刻
+# より後に設定すること。これより早いと、まだ発火していないサービスのタイマーを
+# 「実行中でない」と誤認し、待たずに即シャットダウンしてしまう。
+#
+# 有効化・起動確認:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable finance-lake-shutdown.timer
+#   sudo systemctl start finance-lake-shutdown.timer
+#   systemctl list-timers finance-lake-shutdown.timer
+#   journalctl -u finance-lake-shutdown.service
+
+[Unit]
+Description=Shut down the machine after all daily fetch jobs complete
+After=edinet-dl.service jpx-daily-pdf-dl.service
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/shutdown -h now

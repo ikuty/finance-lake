@@ -37,8 +37,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now jpx-daily-pdf-dl.timer
 ```
 
-`edinet-dl.timer`より前に発火するよう設定してある（`jpx-daily-pdf-dl.service`はマシンを
-シャットダウンしない。`edinet-dl.service`側が最後に行う）。
+`edinet-dl.timer`より前に発火するよう設定してある。`jpx-daily-pdf-dl.service`はマシンを
+シャットダウンしない。シャットダウンは全サービス共通の共有unit
+（`finance-lake-shutdown.service`、リポジトリ直下の`systemd/`配下）が一手に引き受ける。
 
 `--days`は指定しない。`.env`の`DAYS_WINDOW`（既定3日）で、形式C（詳細日次）の遡り窓の
 日数を制御する。

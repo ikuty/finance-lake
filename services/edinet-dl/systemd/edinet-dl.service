@@ -2,10 +2,10 @@
 # /etc/systemd/system/edinet-dl.service にコピーし、自分の環境の実際のユーザー名・パスに
 # 合わせて書き換えること。
 #
-# システムユニットとしてroot権限で実行されるため、shutdownの実行にsudoers設定は不要。
-#
-# ExecStartは2行に分けている。1行目（docker run）が失敗すると2行目（shutdown）は実行
-# されない（診断のためマシンを起動したままにする。電源はスマートプラグが定時に遮断する）。
+# マシンのシャットダウンはこのunitでは行わない。共有unit（リポジトリ直下の
+# systemd/finance-lake-shutdown.service）が、全サービス共通で一手に引き受ける
+# （2026-09-06決定。以前はこのunitの2行目でshutdownを呼んでいたが、他サービスの
+# 実行時間次第ではそれより前にshutdownが走ってしまう非対称な設計だったため分離した）。
 #
 # --csv --pdf: 当面はCSV・PDFのみ取得し、XBRLは対象外とする（2026-08-28決定）。
 # ファンダメンタル分析の核心（財務諸表の数値項目）はCSVでカバーでき、XBRLでしか
@@ -27,4 +27,3 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/finance-lake/services/edinet-dl/.env -v /home/<user>/finance-lake/data/edinet-dl:/data edinet-dl:latest --csv --pdf
-ExecStart=/sbin/shutdown -h now

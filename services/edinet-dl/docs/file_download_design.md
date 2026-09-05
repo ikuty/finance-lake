@@ -429,8 +429,10 @@ logger.addHandler(logging.StreamHandler(sys.stderr))  # 手動実行時にター
   Webhookへ`urllib.request`でJSON POSTするだけで、追加のSDK等は不要（stdlib範囲内）
 - 通知送信は`try/except`で包み、**失敗しても例外を上げずログに記録するだけ**（ジョブ全体の
   成否には影響させない）
-- 送信タイミングは`run()`の最後（スクリプト終了直前、systemd unitの2行目`shutdown`が
-  実行される前）。Pythonアプリ内で完結させる（別のExecStart行やcurlコマンドを増やさない）
+- 送信タイミングは`run()`の最後（スクリプト終了直前、マシンのシャットダウン
+  ＝共有unit`finance-lake-shutdown.service`が実行される前。2026-09-06決定より前は
+  edinet-dl.service自身の2行目`shutdown`だったが、現在は分離されている）。Pythonアプリ内
+  で完結させる（別のExecStart行やcurlコマンドを増やさない）
 
 ### 必要な追加トラッキング（既存設計への追加）
 
