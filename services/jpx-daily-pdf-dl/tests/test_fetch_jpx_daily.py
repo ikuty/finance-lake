@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import sys
 import time
@@ -372,3 +373,115 @@ def test_fetch_monthly_recent_does_nothing_when_no_links_listed(tmp_path: Path) 
 
     mock_get.assert_called_once()
     assert conn.execute("SELECT COUNT(*) FROM fetch_progress").fetchone()[0] == 0
+
+
+# --- RunStats（Slack通知向け集計） ------------------------------------------------
+
+
+def test_http_get_increments_retry_count_on_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    err_429 = urllib.error.HTTPError("http://x", 429, "rate limited", None, None)  # type: ignore[arg-type]
+    fake = _mock_urlopen_sequence(err_429, err_429, b"ok")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    stats = fjd.RunStats()
+    with patch("fetch_jpx_daily.urllib.request.urlopen", side_effect=fake):
+        assert fjd._http_get("http://example/", stats=stats) == b"ok"
+    assert stats.retry_count == 2
+
+
+def test_fetch_detailed_daily_records_stats_on_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = fjd.init_db(tmp_path / "index.db")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
+    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+    pdf_bytes = b"%PDF-fake"
+    stats = fjd.RunStats()
+
+    with patch("fetch_jpx_daily._http_get", side_effect=[index_html.encode("utf-8"), b"", pdf_bytes]):
+        fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, stats=stats)
+
+    assert stats.processed == [("2026-09-03", fjd.FORMAT_DETAILED_DAILY)]
+    assert stats.failed == {}
+    assert stats.downloaded_count == 1
+    assert stats.downloaded_bytes == len(pdf_bytes)
+
+
+def test_fetch_detailed_daily_records_stats_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = fjd.init_db(tmp_path / "index.db")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
+    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+    stats = fjd.RunStats()
+
+    with patch("fetch_jpx_daily._http_get", side_effect=[
+        index_html.encode("utf-8"), b"", RuntimeError("boom"),
+    ]):
+        fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, stats=stats)
+
+    assert stats.processed == []
+    assert stats.failed == {("2026-09-03", fjd.FORMAT_DETAILED_DAILY): "boom"}
+    assert stats.downloaded_count == 0
+
+
+def test_fetch_monthly_recent_records_stats(tmp_path: Path) -> None:
+    conn = fjd.init_db(tmp_path / "index.db")
+    current_html = '<a href="/x/tvdivq0000001jan-att/202501.pdf">Jan</a>'
+    pdf_jan = b"%PDF-jan"
+    stats = fjd.RunStats()
+
+    with patch("fetch_jpx_daily._http_get", side_effect=[current_html.encode("utf-8"), pdf_jan]):
+        fjd.fetch_monthly_recent(conn, tmp_path, TEST_LOGGER, stats=stats)
+
+    assert stats.processed == [("2025-01", fjd.FORMAT_MONTHLY_OHLC)]
+    assert stats.downloaded_count == 1
+    assert stats.downloaded_bytes == len(pdf_jan)
+
+
+# --- Slack通知 --------------------------------------------------------------------
+
+
+def test_build_slack_message_success() -> None:
+    stats = fjd.RunStats(
+        processed=[("2026-09-03", fjd.FORMAT_DETAILED_DAILY), ("2025-01", fjd.FORMAT_MONTHLY_OHLC)],
+        downloaded_count=2, downloaded_bytes=1_500_000, retry_count=1,
+    )
+    message = fjd.build_slack_message(stats, free_bytes=421_300_000_000)
+    assert message.startswith("✅")
+    assert "形式C（詳細日次）: 処理1件 / 成功1件" in message
+    assert "形式B（月次簡易OHLC）: 処理1件 / 成功1件" in message
+    assert "2件" in message
+    assert "リトライ発生: 1回" in message
+    assert "空き容量: 392.4GB" in message
+
+
+def test_build_slack_message_failure_includes_error_detail() -> None:
+    stats = fjd.RunStats(
+        processed=[("2025-01", fjd.FORMAT_MONTHLY_OHLC)],
+        failed={("2026-09-03", fjd.FORMAT_DETAILED_DAILY): "接続エラー boom"},
+    )
+    message = fjd.build_slack_message(stats, free_bytes=0)
+    assert message.startswith("❌")
+    assert "形式C（詳細日次）: 処理1件 / 成功0件 / 失敗1件" in message
+    assert "失敗: 2026-09-03 (detailed-daily) (接続エラー boom)" in message
+
+
+def test_send_slack_notification_posts_json() -> None:
+    mock_resp = MagicMock()
+    mock_resp.__enter__.return_value = mock_resp
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(req: Any, timeout: float = 10) -> MagicMock:
+        captured["url"] = req.full_url
+        captured["data"] = json.loads(req.data.decode("utf-8"))
+        return mock_resp
+
+    with patch("fetch_jpx_daily.urllib.request.urlopen", side_effect=fake_urlopen):
+        fjd.send_slack_notification("https://hooks.slack.com/x", "hello", TEST_LOGGER)
+
+    assert captured["url"] == "https://hooks.slack.com/x"
+    assert captured["data"] == {"text": "hello"}
+
+
+def test_send_slack_notification_failure_does_not_raise() -> None:
+    with patch("fetch_jpx_daily.urllib.request.urlopen", side_effect=OSError("network down")):
+        fjd.send_slack_notification("https://hooks.slack.com/x", "hello", TEST_LOGGER)
+    # 例外が上がらなければOK

@@ -28,23 +28,27 @@ Usage:
     python3 fetch_jpx_daily.py --days 7
 
 設定は環境変数から読む(Dockerの --env-file を想定):
-    DB_PATH      省略時 /data/index.db
-    DATA_DIR     省略時 /data/raw
-    LOG_PATH     省略時 /data/logs/jpx-daily-pdf-dl.log
-    DAYS_WINDOW  省略時 3。--days未指定時に対象とする、前日から遡る日数
+    DB_PATH             省略時 /data/index.db
+    DATA_DIR            省略時 /data/raw
+    LOG_PATH            省略時 /data/logs/jpx-daily-pdf-dl.log
+    DAYS_WINDOW         省略時 3。--days未指定時に対象とする、前日から遡る日数
+    SLACK_WEBHOOK_URL   省略可。設定時のみ実行結果をSlackへ通知する（edinet-dlと同じ設計）
 """
 from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Iterator
@@ -75,6 +79,18 @@ MONTHLY_LINK_RE = re.compile(r'href="([^"]*/(\d{6})\.pdf)"')
 
 class RateLimitedError(RuntimeError):
     pass
+
+
+@dataclass
+class RunStats:
+    """1回の実行（形式C・形式Bの両方）のサマリ。Slack通知用に集計するだけの一時的な
+    構造で、永続化はしない（edinet-dlと同じ設計）。"""
+
+    processed: list[tuple[str, str]] = field(default_factory=list)  # (period, format)
+    failed: dict[tuple[str, str], str] = field(default_factory=dict)
+    downloaded_count: int = 0
+    downloaded_bytes: int = 0
+    retry_count: int = 0
 
 
 def today_jst() -> datetime.date:
@@ -150,10 +166,13 @@ def store_progress(
     conn.commit()
 
 
-def _http_get(url: str, max_retries: int = 5) -> bytes:
+def _http_get(url: str, max_retries: int = 5, stats: RunStats | None = None) -> bytes:
     """共通のHTTPフェッチ+リトライ。429・ネットワークエラー/タイムアウト・5xxはリトライ対象
     （最大5回、指数バックオフ）、それ以外の4xx（404等）は即座に呼び出し元へ伝播させる
-    （呼び出し元が404を「まだ確定パスに存在しない」の意味で扱うことがあるため）。"""
+    （呼び出し元が404を「まだ確定パスに存在しない」の意味で扱うことがあるため）。statsを
+    渡すと、リトライが発生するたびに`retry_count`をインクリメントする（Slack通知向け、
+    edinet-dlの429カウンタと同じ位置づけ。ただしここでは429・5xx・ネットワークエラーを
+    区別せずまとめて数える）。"""
     attempt = 0
     while True:
         attempt += 1
@@ -168,10 +187,14 @@ def _http_get(url: str, max_retries: int = 5) -> bytes:
                 raise
             if attempt > max_retries:
                 raise RateLimitedError(f"{url}: リトライ上限に達しました (status={e.code})") from e
+            if stats is not None:
+                stats.retry_count += 1
             time.sleep(min(60, 2**attempt))
         except (urllib.error.URLError, OSError) as e:
             if attempt > max_retries:
                 raise RuntimeError(f"{url}: ネットワークエラーが続くためリトライ上限に達しました ({e})") from e
+            if stats is not None:
+                stats.retry_count += 1
             time.sleep(min(60, 2**attempt))
 
 
@@ -220,16 +243,26 @@ def save_atomic(path: Path, data: bytes) -> None:
 
 
 def fetch_detailed_daily(
-    conn: sqlite3.Connection, data_dir: Path, days_window: int, logger: logging.Logger, force: bool = False
+    conn: sqlite3.Connection,
+    data_dir: Path,
+    days_window: int,
+    logger: logging.Logger,
+    stats: RunStats | None = None,
+    force: bool = False,
 ) -> None:
     """形式C（詳細日次）を、前日から days_window 日分さかのぼって取得する。
     index.html・00-archives-01ページを読んで日付->URLの対応表を作り、対象日が
     そこに含まれていればダウンロードする（含まれない＝週末・休日で提出が無いか、
     ローリングウィンドウの範囲外）。force=Trueの場合、既にdoneな日付も対象に含める
     （ただし既存ファイルは引き続き存在チェックでスキップされ、無駄な再ダウンロードは
-    発生しない。edinet-dlの--forceと同じ意味）。"""
-    index_html = _http_get(f"https://{BASE_HOST}{DAILY_INDEX_PATH}").decode("utf-8", errors="ignore")
-    archive_html = _http_get(f"https://{BASE_HOST}{DAILY_ARCHIVE_PATH}").decode("utf-8", errors="ignore")
+    発生しない。edinet-dlの--forceと同じ意味）。statsを渡すとSlack通知向けの集計
+    （processed/failed/ダウンロード件数・サイズ）を記録する。"""
+    if stats is None:
+        stats = RunStats()
+    index_html = _http_get(f"https://{BASE_HOST}{DAILY_INDEX_PATH}", stats=stats).decode("utf-8", errors="ignore")
+    archive_html = _http_get(f"https://{BASE_HOST}{DAILY_ARCHIVE_PATH}", stats=stats).decode(
+        "utf-8", errors="ignore"
+    )
     links = parse_daily_links(archive_html)
     links.update(parse_daily_links(index_html))  # 重複する日付はindex.html側を優先
 
@@ -249,20 +282,29 @@ def fetch_detailed_daily(
         dest = detailed_daily_path(data_dir, date_str)
         if dest.exists():
             store_progress(conn, date_str, FORMAT_DETAILED_DAILY, "done", url, None)
+            stats.processed.append((date_str, FORMAT_DETAILED_DAILY))
             continue
 
         try:
-            body = _http_get(url)
+            body = _http_get(url, stats=stats)
             save_atomic(dest, body)
             store_progress(conn, date_str, FORMAT_DETAILED_DAILY, "done", url, None)
+            stats.processed.append((date_str, FORMAT_DETAILED_DAILY))
+            stats.downloaded_count += 1
+            stats.downloaded_bytes += len(body)
             logger.info(f"{date_str} ({FORMAT_DETAILED_DAILY}): 取得成功")
         except Exception as e:
             store_progress(conn, date_str, FORMAT_DETAILED_DAILY, "error", url, str(e))
+            stats.failed[(date_str, FORMAT_DETAILED_DAILY)] = str(e)
             logger.error(f"{date_str} ({FORMAT_DETAILED_DAILY}): 取得失敗 ({e})")
 
 
 def fetch_monthly_recent(
-    conn: sqlite3.Connection, data_dir: Path, logger: logging.Logger, force: bool = False
+    conn: sqlite3.Connection,
+    data_dir: Path,
+    logger: logging.Logger,
+    stats: RunStats | None = None,
+    force: bool = False,
 ) -> None:
     """形式B（月次簡易OHLC）のうち、03.htmlに現在列挙されている月を取得する。
 
@@ -274,9 +316,12 @@ def fetch_monthly_recent(
 
     列挙されている中で最新の月は、確定前でまだ更新される可能性があるため常に
     取得し直す。それより前の月は、一度成功していれば変わらないためスキップする
-    （force=Trueの場合はこのスキップも行わない）。
+    （force=Trueの場合はこのスキップも行わない）。statsを渡すとSlack通知向けの
+    集計を記録する。
     """
-    html = _http_get(f"https://{BASE_HOST}{MONTHLY_CURRENT_PATH}").decode("utf-8", errors="ignore")
+    if stats is None:
+        stats = RunStats()
+    html = _http_get(f"https://{BASE_HOST}{MONTHLY_CURRENT_PATH}", stats=stats).decode("utf-8", errors="ignore")
     links = parse_monthly_links(html)
     if not links:
         logger.info(f"{MONTHLY_CURRENT_PATH}: 列挙されている月が無い")
@@ -289,14 +334,67 @@ def fetch_monthly_recent(
 
         url = f"https://{BASE_HOST}{rel_path}"
         try:
-            body = _http_get(url)
+            body = _http_get(url, stats=stats)
             dest = monthly_ohlc_path(data_dir, year_month)
             save_atomic(dest, body)
             store_progress(conn, year_month, FORMAT_MONTHLY_OHLC, "done", url, None)
+            stats.processed.append((year_month, FORMAT_MONTHLY_OHLC))
+            stats.downloaded_count += 1
+            stats.downloaded_bytes += len(body)
             logger.info(f"{year_month} ({FORMAT_MONTHLY_OHLC}): 取得成功")
         except Exception as e:
             store_progress(conn, year_month, FORMAT_MONTHLY_OHLC, "error", url, str(e))
+            stats.failed[(year_month, FORMAT_MONTHLY_OHLC)] = str(e)
             logger.error(f"{year_month} ({FORMAT_MONTHLY_OHLC}): 取得失敗 ({e})")
+
+
+def format_bytes(n: int) -> str:
+    mb = n / (1024 * 1024)
+    if mb >= 1024:
+        return f"{mb / 1024:.1f}GB"
+    return f"{mb:.1f}MB"
+
+
+def _format_counts(stats: RunStats, fmt: str, label: str) -> str:
+    n_processed = sum(1 for p in stats.processed if p[1] == fmt)
+    n_failed = sum(1 for p in stats.failed if p[1] == fmt)
+    if n_failed:
+        return f"{label}: 処理{n_processed + n_failed}件 / 成功{n_processed}件 / 失敗{n_failed}件"
+    return f"{label}: 処理{n_processed}件 / 成功{n_processed}件"
+
+
+def build_slack_message(stats: RunStats, free_bytes: int) -> str:
+    free_gb = free_bytes / (1024**3)
+
+    if stats.failed:
+        lines = [f"❌ jpx-daily-pdf-dl 日次実行 失敗 ({len(stats.failed)}件)"]
+    else:
+        lines = ["✅ jpx-daily-pdf-dl 日次実行 成功"]
+
+    lines.append(_format_counts(stats, FORMAT_DETAILED_DAILY, "形式C（詳細日次）"))
+    lines.append(_format_counts(stats, FORMAT_MONTHLY_OHLC, "形式B（月次簡易OHLC）"))
+
+    for (period, fmt), message in stats.failed.items():
+        lines.append(f"失敗: {period} ({fmt}) ({message})")
+
+    lines.append(f"ダウンロード: {stats.downloaded_count}件 / {format_bytes(stats.downloaded_bytes)}")
+    lines.append(f"リトライ発生: {stats.retry_count}回")
+    lines.append(f"空き容量: {free_gb:.1f}GB")
+    return "\n".join(lines)
+
+
+def send_slack_notification(webhook_url: str, message: str, logger: logging.Logger) -> None:
+    """Slackへの通知失敗はログに記録するのみで、例外は上げない（ジョブ全体の成否に
+    影響させない。edinet-dlと同じ設計）。"""
+    try:
+        payload = json.dumps({"text": message}).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+    except Exception as e:
+        logger.error(f"Slack通知の送信に失敗しました: {e}")
 
 
 def main() -> None:
@@ -315,13 +413,26 @@ def main() -> None:
     db_path = Path(os.environ.get("DB_PATH", DEFAULT_DB_PATH))
     data_dir = Path(os.environ.get("DATA_DIR", DEFAULT_DATA_DIR))
     log_path = os.environ.get("LOG_PATH", DEFAULT_LOG_PATH)
+    slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
 
     logger = setup_logger(log_path)
     conn = init_db(db_path)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    fetch_detailed_daily(conn, data_dir, args.days, logger, force=args.force)
-    fetch_monthly_recent(conn, data_dir, logger, force=args.force)
+    stats = RunStats()
+    fetch_detailed_daily(conn, data_dir, args.days, logger, stats, force=args.force)
+    fetch_monthly_recent(conn, data_dir, logger, stats, force=args.force)
+
+    try:
+        free_bytes = shutil.disk_usage(data_dir).free
+    except OSError:
+        free_bytes = 0
+
+    message = build_slack_message(stats, free_bytes)
+    logger.info("summary: " + message.replace("\n", " / "))
+
+    if slack_webhook_url:
+        send_slack_notification(slack_webhook_url, message, logger)
 
 
 if __name__ == "__main__":

@@ -25,17 +25,17 @@
   内容は2025年1〜8月分のみ）。固定の「当月」を仮定せず、ページに実際に列挙されている
   月をそのまま対象にする設計に修正済み。
 
-## 現状（2026-09-05時点）
+## 現状（2026-09-06時点）
 
-- サービス本体（`scripts/fetch_jpx_daily.py`）実装済み。`pytest`（23件）・
+- サービス本体（`scripts/fetch_jpx_daily.py`）実装済み。`pytest`（34件）・
   `mypy --strict`ともにパス。
 - 実機（JPXサイト）に対して実際に動作確認済み（形式C・形式Bとも実データの取得に成功）。
-- Mac Miniへのデプロイは未実施。
+- Mac Miniへのデプロイ・systemdタイマー登録済み。マシンのシャットダウンは全サービス
+  共通の共有unit`finance-lake-shutdown.service`（リポジトリ直下）が担う。
+- Slack通知実装済み（`edinet-dl`と同じ設計。`SLACK_WEBHOOK_URL`未設定なら通知スキップ。
+  詳細は`docs/file_download_design.md`「Slack通知の設計」参照）。
 - 形式A・形式Bの確定済み過去年分の一回限りバックフィルスクリプトは未実装。
 
 ## 次にやること（未着手）
 
-- Docker・GitHub Actions（`edinet-dl-build-push.yml`/`edinet-dl-deploy.yml`と同様の
-  パターンで、pathsフィルタ付き）の追加
-- Mac Miniへのデプロイ、systemdタイマー登録
 - 形式A・形式Bの確定済み過去年分の一回限りバックフィルスクリプト

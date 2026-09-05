@@ -57,6 +57,10 @@ docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest
 docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest --force
 ```
 
+`.env`に`SLACK_WEBHOOK_URL`を設定すると、実行結果（形式C・形式Bそれぞれの処理/成功/
+失敗件数、ダウンロード件数・サイズ、リトライ発生回数、空き容量）を1回の実行につき1通
+Slackへ通知する（`edinet-dl`と同じ設計）。未設定なら通知はスキップされる。
+
 ## テスト・型チェック
 
 ```
