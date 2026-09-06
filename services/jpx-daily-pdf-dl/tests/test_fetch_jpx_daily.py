@@ -503,7 +503,7 @@ def test_send_slack_notification_posts_json() -> None:
         fjd.send_slack_notification("https://hooks.slack.com/x", "hello", TEST_LOGGER)
 
     assert captured["url"] == "https://hooks.slack.com/x"
-    assert captured["data"] == {"text": "hello"}
+    assert captured["data"] == {"text": "hello", "unfurl_links": False, "unfurl_media": False}
 
 
 def test_send_slack_notification_failure_does_not_raise() -> None:
@@ -512,24 +512,52 @@ def test_send_slack_notification_failure_does_not_raise() -> None:
     # 例外が上がらなければOK
 
 
-# --- save_last_run_summary -----------------------------------------------------------
+# --- upload_report_to_s3 --------------------------------------------------------------
 
 
-def test_save_last_run_summary_preserves_newlines(tmp_path: Path) -> None:
-    log_path = str(tmp_path / "jpx-daily-pdf-dl.log")
-    message = "✅ jpx-daily-pdf-dl 日次実行 成功\n詳細日次: 処理1件 / 成功1件\nダウンロード: 9件 / 57.1MB"
-
-    fjd.save_last_run_summary(log_path, message, TEST_LOGGER)
-
-    summary_path = tmp_path / fjd.LAST_RUN_SUMMARY_FILENAME
-    # ログの"summary:"行と違い、" / "を含む行内の区切りと改行が区別できる形で残る
-    assert summary_path.read_text(encoding="utf-8") == message
-    assert summary_path.read_text(encoding="utf-8").count("\n") == 2
+def test_upload_report_to_s3_returns_none_when_bucket_not_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("S3_BUCKET_NAME", raising=False)
+    assert fjd.upload_report_to_s3(tmp_path / "index.db", TEST_LOGGER) is None
 
 
-def test_save_last_run_summary_does_not_raise_on_write_failure(tmp_path: Path) -> None:
-    # ログのディレクトリ自体が存在せず、かつ作成もできない状況を模して失敗させる
-    log_path = str(tmp_path / "no_such_dir" / "jpx-daily-pdf-dl.log")
-    with patch("fetch_jpx_daily.save_atomic", side_effect=OSError("disk full")):
-        fjd.save_last_run_summary(log_path, "hello", TEST_LOGGER)
-    # 例外が上がらなければOK
+def test_upload_report_to_s3_uploads_and_returns_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("S3_BUCKET_NAME", "ikuty-finance")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+    mock_client = MagicMock()
+    with patch("fetch_jpx_daily.boto3.client", return_value=mock_client) as mock_boto3_client:
+        url = fjd.upload_report_to_s3(tmp_path / "index.db", TEST_LOGGER)
+
+    mock_boto3_client.assert_called_once_with("s3")
+    mock_client.put_object.assert_called_once()
+    call_kwargs = mock_client.put_object.call_args.kwargs
+    assert call_kwargs["Bucket"] == "ikuty-finance"
+    assert call_kwargs["Key"] == fjd.S3_REPORT_KEY
+    assert b"<html" in call_kwargs["Body"]
+    assert call_kwargs["ContentType"] == "text/html; charset=utf-8"
+    assert url == f"http://ikuty-finance.s3-website-ap-northeast-1.amazonaws.com/{fjd.S3_REPORT_KEY}"
+
+
+def test_upload_report_to_s3_uses_default_region_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("S3_BUCKET_NAME", "ikuty-finance")
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    with patch("fetch_jpx_daily.boto3.client", return_value=MagicMock()):
+        url = fjd.upload_report_to_s3(tmp_path / "index.db", TEST_LOGGER)
+
+    assert url is not None
+    assert fjd.DEFAULT_S3_REGION in url
+
+
+def test_upload_report_to_s3_returns_none_and_logs_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("S3_BUCKET_NAME", "ikuty-finance")
+    with patch("fetch_jpx_daily.boto3.client", side_effect=RuntimeError("boto3 error")):
+        url = fjd.upload_report_to_s3(tmp_path / "index.db", TEST_LOGGER)
+    # 例外が上がらず、Noneが返ればOK
+    assert url is None

@@ -35,9 +35,13 @@
   共通の共有unit`finance-lake-shutdown.service`（リポジトリ直下）が担う。
 - Slack通知実装済み（`edinet-dl`と同じ設計。`SLACK_WEBHOOK_URL`未設定なら通知スキップ。
   詳細は`docs/file_download_design.md`「Slack通知の設計」参照）。
-- バックフィル進捗レポート（`scripts/backfill_report.py`）実装済み。デプロイ
-  ワークフロー実行のたびにMac Mini上で生成し、GitHub ActionsのArtifactとして
-  アップロード、Slackにも通知する。
+- バックフィル進捗レポート（`scripts/backfill_report.py`）実装済み。**日次サービス
+  本体の実行のたびに自動生成し、S3（`ikuty-finance`バケット、静的サイトホスティング・
+  全公開・7日ライフサイクル）へアップロード、公開URLをSlack通知に含める**
+  （2026-09-06、GitHub Actionsのデプロイワークフロー経由だった旧方式は設計ミスと
+  判断し廃止。詳細は`docs/file_download_design.md`「バックフィル進捗レポートの
+  公開（S3）」参照）。`boto3`を新規依存として追加した（`finance-lake`内で唯一の
+  外部依存）。
 - 形式A・形式B確定済み過去年分の一回限りバックフィルスクリプト
   （`scripts/backfill_confirmed_archive.py`）実装済み。進捗記録の粒度は月単位
   （`YYYY-MM`）で、`backfill_report.py`がそのまま読める（`pytest`77件・
@@ -68,5 +72,4 @@
 ## 次にやること（未着手）
 
 - なし（形式A・形式B確定済み過去年分のバックフィルは完了。バックフィルレポートの
-  Slack通知方法の見直し（GitHub Actions Artifact経由ではなく、Mac Mini実行時に
-  HTML添付でSlackへ直接送りたいという指摘あり、実装は未着手）が残課題）
+  公開方法もS3経由に切り替え済み）

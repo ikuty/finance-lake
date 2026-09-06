@@ -281,6 +281,38 @@ def render_page(daily_table_html: str, monthly_table_html: str) -> str:
 """
 
 
+def generate_report_html(db_path: Path, end_year_month: str | None = None) -> tuple[str, str]:
+    """バックフィル進捗レポートのHTML全体と、Slack通知等で使う短いサマリ文字列を
+    生成して返す（ファイルには書き込まない）。fetch_jpx_daily.py（日次サービス
+    本体）がSlack通知・S3アップロード向けに直接呼び出せるよう、main()のロジックから
+    切り出した（2026-09-06追加）。"""
+    today = today_jst()
+    if end_year_month:
+        end_year_str, end_month_str = end_year_month.split("-")
+        end_year, end_month = int(end_year_str), int(end_month_str)
+    else:
+        end_year, end_month = default_confirmed_cutoff(today)
+
+    year_months = backfillable_year_months(end_year, end_month)
+    monthly_done = load_done_year_months(db_path)
+    monthly_table = render_monthly_table(year_months, monthly_done, display_through_year=today.year)
+
+    last_complete_day = last_complete_day_jst()
+    dates_in_scope = daily_service_dates(end_year, end_month, last_complete_day)
+    daily_done = load_done_dates(db_path, FORMAT_DETAILED_DAILY)
+    daily_table = render_daily_table(dates_in_scope, daily_done)
+
+    html = render_page(daily_table, monthly_table)
+
+    monthly_done_count = sum(1 for ym in year_months if ym in monthly_done)
+    daily_done_count = sum(1 for d in dates_in_scope if d in daily_done)
+    summary = (
+        f"月次: {monthly_done_count}/{len(year_months)}ヶ月完了、"
+        f"日次: {daily_done_count}/{len(dates_in_scope)}日完了"
+    )
+    return html, summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db-path", type=str, default=DEFAULT_DB_PATH, help=f"省略時 {DEFAULT_DB_PATH}")
@@ -295,36 +327,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    today = today_jst()
-    if args.end_year_month:
-        end_year_str, end_month_str = args.end_year_month.split("-")
-        end_year, end_month = int(end_year_str), int(end_month_str)
-    else:
-        end_year, end_month = default_confirmed_cutoff(today)
-
     db_path = Path(args.db_path)
-
-    year_months = backfillable_year_months(end_year, end_month)
-    monthly_done = load_done_year_months(db_path)
-    monthly_table = render_monthly_table(year_months, monthly_done, display_through_year=today.year)
-
-    last_complete_day = last_complete_day_jst()
-    dates_in_scope = daily_service_dates(end_year, end_month, last_complete_day)
-    daily_done = load_done_dates(db_path, FORMAT_DETAILED_DAILY)
-    daily_table = render_daily_table(dates_in_scope, daily_done)
-
-    html = render_page(daily_table, monthly_table)
+    html, summary = generate_report_html(db_path, args.end_year_month)
 
     output_path = Path(args.output)
     output_path.write_text(html, encoding="utf-8")
-
-    monthly_done_count = sum(1 for ym in year_months if ym in monthly_done)
-    daily_done_count = sum(1 for d in dates_in_scope if d in daily_done)
-    print(
-        f"{output_path} に出力しました"
-        f"（月次: {monthly_done_count}/{len(year_months)}ヶ月完了、"
-        f"日次: {daily_done_count}/{len(dates_in_scope)}日完了）"
-    )
+    print(f"{output_path} に出力しました（{summary}）")
 
 
 if __name__ == "__main__":

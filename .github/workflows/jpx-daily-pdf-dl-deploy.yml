@@ -7,10 +7,13 @@ name: jpx-daily-pdf-dl - Deploy to Mac Mini
 # Secrets・事前準備は edinet-dl-deploy.yml と共通（Tailscale OAuthクライアント、
 # SSH_PRIVATE_KEY、MAC_MINI_HOST、MAC_MINI_USER）。
 #
-# 加えて、バックフィル進捗レポートのSlack通知には SLACK_WEBHOOK_URL という
-# GitHub Actions Secretが必要（2026-09-06追加）。Mac Mini上の.envに設定している
-# ものとは別の場所（GitHub Actions側）に登録する必要がある（値は同じものを使い回して
-# よい）。未設定でも通知がスキップされるだけでデプロイ自体は失敗しない。
+# バックフィル進捗レポートの生成・S3アップロード・Slack通知は、以前このワークフロー
+# （手動トリガーのデプロイ時のみ実行）が担っていたが、2026-09-06に廃止した。
+# GitHub Actions以外の経路で結果を確認できない（GitHubへのログインが無いと
+# Artifactを見られない）という設計上の問題があったため。現在はサービス本体
+# （fetch_jpx_daily.py、日次実行のたびにS3へアップロードしSlackへ通知）が担う。
+# 詳細はservices/jpx-daily-pdf-dl/docs/file_download_design.md
+# 「バックフィル進捗レポートの公開（S3）」参照。
 
 on:
   workflow_dispatch: {}
@@ -36,91 +39,16 @@ jobs:
           # 無い）ローカルタグを参照しているため、pull後に同じタグへ付け替える
           # （edinet-dlで実機確認済みの同種の不具合を踏まえた対応）。
           #
-          # git pullも併せて行う（2026-09-06追加）。backfill_report.pyは後続の
-          # ステップでMac Mini上のgitチェックアウトから直接`python3`実行するため、
-          # Dockerイメージのpullだけでは更新されない。これを怠ると、デプロイの
-          # たびに古いスクリプトのままレポートが生成され続けるという不具合が実機で
-          # 発生した（backfill_report.pyの修正後もDEFAULT_LAG_MONTHSの古い値が
-          # 使われ続けていた）。detached HEADにはせず、mainブランチのまま
-          # fast-forwardする（このチェックアウトはユーザーが手動操作でも使うため、
-          # ブランチが外れた状態にしない）。
+          # git pullも併せて行う。Mac Mini上で直接python3実行するスクリプト
+          # （backfill_confirmed_archive.py等の使い捨てスクリプト）や、ユーザーが
+          # 手動操作で参照するチェックアウトを最新に保つため。detached HEADには
+          # せずmainブランチのままfast-forwardする。
           script: |
             cd /home/${{ secrets.MAC_MINI_USER }}/finance-lake
             git checkout main
             git pull origin main
             docker pull ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest
             docker tag ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest jpx-daily-pdf-dl:latest
-
-      # バックフィル進捗レポート（scripts/backfill_report.py）はMac Mini上のSQLite DBを
-      # 読む必要があるため、GitHub Actions側にDBを転送するのではなく、Mac Mini上で
-      # レポート（HTML）を生成してから、そのHTMLだけを持ち帰る（2026-09-06導入）。
-      # appleboy/ssh-actionはリモートでのコマンド実行のみでファイル転送は行わないため、
-      # 素のssh/scp（Ubuntuランナーに標準搭載）を使う。新規の依存は追加しない。
-      - name: Generate backfill report on Mac Mini and fetch it
-        id: generate_report
-        run: |
-          mkdir -p ~/.ssh
-          cat > ~/.ssh/id_ed25519 << 'KEYEOF'
-          ${{ secrets.SSH_PRIVATE_KEY }}
-          KEYEOF
-          chmod 600 ~/.ssh/id_ed25519
-          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519"
-          SUMMARY=$(ssh $SSH_OPTS ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }} \
-            "cd /home/${{ secrets.MAC_MINI_USER }}/finance-lake/services/jpx-daily-pdf-dl && \
-             python3 scripts/backfill_report.py \
-               --db-path /home/${{ secrets.MAC_MINI_USER }}/finance-lake/data/jpx-daily-pdf-dl/index.db \
-               --output /tmp/jpx-backfill-report.html")
-          echo "$SUMMARY"
-          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
-          scp $SSH_OPTS \
-            ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }}:/tmp/jpx-backfill-report.html \
-            backfill_report.html
-
-          # 直近の日次実行（サービス本体のsend_slack_notification）が出したサマリも
-          # 併せて通知したい、との要望（2026-09-06）。ログファイルの"summary:"行は
-          # 改行を" / "に置換して1行に潰しており、メッセージ本文自体にも" / "が
-          # 含まれるため後から元の複数行構造を復元できない（実機検証で確認）。
-          # そのためサービス本体側に、改行を保持したまま保存する専用ファイル
-          # （last_run_summary.txt、save_last_run_summary()参照）を追加し、
-          # ここではそれをそのまま読む。ファイルが無い場合は空文字列のままにする
-          # （Notify Slackステップ側で空なら省略する）。
-          LAST_RUN_SUMMARY=$(ssh $SSH_OPTS ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }} \
-            "cat /home/${{ secrets.MAC_MINI_USER }}/finance-lake/data/jpx-daily-pdf-dl/logs/last_run_summary.txt 2>/dev/null" || true)
-          echo "last_run_summary<<SUMMARYEOF" >> "$GITHUB_OUTPUT"
-          echo "$LAST_RUN_SUMMARY" >> "$GITHUB_OUTPUT"
-          echo "SUMMARYEOF" >> "$GITHUB_OUTPUT"
-
-      - name: Upload backfill report as GitHub Actions artifact
-        id: upload_report
-        uses: actions/upload-artifact@v4
-        with:
-          name: jpx-backfill-report
-          path: backfill_report.html
-
-      # Artifactのダウンロードには閲覧側もGitHubへのログインが必要（公開リポジトリでも
-      # 匿名ダウンロードはGitHub側の制限で不可）。個人利用のため実害は無い。
-      - name: Notify Slack with report link
-        run: |
-          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
-            echo "SLACK_WEBHOOK_URL未設定のため通知をスキップします"
-            exit 0
-          fi
-          TEXT="📊 jpx-daily-pdf-dl バックフィル進捗レポート
-          ${{ steps.generate_report.outputs.summary }}
-          ${{ steps.upload_report.outputs.artifact-url }}"
-
-          # 直近の日次実行サマリも併せて表示する（2026-09-06追加）。
-          LAST_RUN_SUMMARY="${{ steps.generate_report.outputs.last_run_summary }}"
-          if [ -n "$LAST_RUN_SUMMARY" ]; then
-            TEXT="$TEXT"$'\n\n'"$LAST_RUN_SUMMARY"
-          fi
-
-          # unfurl_links/unfurl_mediaを無効化する。有効のままだとURLの大きな
-          # プレビューカードが表示され、テキスト部分が視覚的に埋もれてしまうため
-          # （2026-09-06修正、実機で確認）。
-          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text, unfurl_links: false, unfurl_media: false}')
-          curl -fsS -X POST -H 'Content-Type: application/json' \
-            -d "$PAYLOAD" "${{ secrets.SLACK_WEBHOOK_URL }}"
 
 # docker run --rm 方式（コンテナ内にデーモンを置かない）のため、pull後の再起動や
 # サービス再読み込みは不要。次回のsystemdタイマー実行から新しいイメージが使われる。

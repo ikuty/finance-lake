@@ -183,3 +183,29 @@ def test_render_page_includes_both_summaries_and_legends() -> None:
     assert "バックフィル済み" in html
     assert daily_table in html
     assert monthly_table in html
+
+
+# --- generate_report_html -----------------------------------------------------------------
+
+
+def test_generate_report_html_returns_html_and_summary(tmp_path: Path) -> None:
+    db_path = _make_db(tmp_path, [
+        ("1981-01", br.FORMAT_LEGACY_DAILY, "done"),
+        ("2026-09-01", br.FORMAT_DETAILED_DAILY, "done"),
+    ])
+    html, summary = br.generate_report_html(db_path)
+
+    assert "<html" in html
+    assert 'id="monthly-grid"' in html
+    assert 'id="daily-grid"' in html
+    assert "ヶ月完了" in summary
+    assert "日完了" in summary
+
+
+def test_generate_report_html_respects_end_year_month_override(tmp_path: Path) -> None:
+    db_path = _make_db(tmp_path, [("2025-06", br.FORMAT_MONTHLY_OHLC, "done")])
+    _, summary_default = br.generate_report_html(db_path)
+    _, summary_override = br.generate_report_html(db_path, end_year_month="2025-07")
+
+    # --end-year-monthを指定すると対象範囲(分母)が変わるため、サマリ文字列も変わる
+    assert summary_default != summary_override

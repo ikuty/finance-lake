@@ -63,6 +63,11 @@ docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest -
 失敗件数、ダウンロード件数・サイズ、リトライ発生回数、空き容量）を1回の実行につき1通
 Slackへ通知する（`edinet-dl`と同じ設計）。未設定なら通知はスキップされる。
 
+`.env`に`S3_BUCKET_NAME`（＋`AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY`・
+`AWS_DEFAULT_REGION`）を設定すると、Slack通知の直前にバックフィル進捗レポートを
+生成しS3へアップロードし、公開URLをSlack通知に含める（詳細は後述「バックフィル
+進捗レポート」参照）。未設定ならアップロード自体をスキップする。
+
 ## 確定済みアーカイブの一回限りバックフィル
 
 形式A（1981年1月〜2019年12月）・形式B確定済み過去年分（2020年1月〜前月）を取得する
@@ -106,22 +111,20 @@ python3 scripts/backfill_report.py --db-path /home/ikuty/finance-lake/data/jpx-d
 網掛け部分（常設サービス担当分）が実際にどこまで取得できているかは、月次の表とは
 別に、ページ上部の日次の表（形式C、年月×日）で確認できる。
 
-`jpx-daily-pdf-dl-deploy.yml`（GitHub Actions、手動トリガー）を実行すると、Mac Mini上で
-このレポートを生成し、GitHub ActionsのArtifactとしてアップロードする（DBファイル自体は
-転送しない）。ワークフロー実行後、GitHubの当該Actionsランのページから
-`jpx-backfill-report`という名前のArtifactをダウンロードできる。
-
-GitHub Actions Secretsに`SLACK_WEBHOOK_URL`を登録しておくと（Mac Mini上の`.env`とは
-別の場所への登録が必要、値は使い回してよい）、サマリとArtifactへのリンクをSlackへ
-通知する。未設定でも通知がスキップされるだけでデプロイは失敗しない。
-
-```
-gh secret set SLACK_WEBHOOK_URL --repo ikuty/finance-lake
-```
-
 ```
 python3 scripts/backfill_report.py --db-path ... --end-year-month 2025-01
 ```
+
+**公開（S3）**: このレポートは、サービス本体（`fetch_jpx_daily.py`）の**日次実行の
+たびに自動生成され、S3へアップロードされる**（`.env`に`S3_BUCKET_NAME`設定時のみ、
+前述「日次更新」参照）。公開URLはSlack通知に含まれる。GitHub Actionsのデプロイ
+ワークフロー経由でArtifactとして生成する旧方式は廃止した（GitHubへのログインが
+無いと結果を確認できない、かつ更新頻度がデプロイ頻度に従ってしまうという設計上の
+問題があったため）。バケットは静的サイトホスティングを有効化した全公開バケット
+（`ikuty-finance`、秘匿情報を含まないため公開）で、ライフサイクルルールにより
+7日で自動削除される。詳細は
+[docs/file_download_design.md](./docs/file_download_design.md)「バックフィル進捗
+レポートの公開（S3）」参照。
 
 ## テスト・型チェック
 
