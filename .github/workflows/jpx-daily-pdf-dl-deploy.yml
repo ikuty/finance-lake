@@ -82,7 +82,10 @@ jobs:
           TEXT="📊 jpx-daily-pdf-dl バックフィル進捗レポート
           ${{ steps.generate_report.outputs.summary }}
           ${{ steps.upload_report.outputs.artifact-url }}"
-          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+          # unfurl_links/unfurl_mediaを無効化する。有効のままだとURLの大きな
+          # プレビューカードが表示され、テキスト部分が視覚的に埋もれてしまうため
+          # （2026-09-06修正、実機で確認）。
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text, unfurl_links: false, unfurl_media: false}')
           curl -fsS -X POST -H 'Content-Type: application/json' \
             -d "$PAYLOAD" "${{ secrets.SLACK_WEBHOOK_URL }}"
 
