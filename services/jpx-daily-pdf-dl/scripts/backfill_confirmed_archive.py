@@ -10,8 +10,12 @@
 両形式ともパス直接指定（一覧ページのスクレイピング不要）で取得できる。
 
   - 形式A: https://www.jpx.co.jp/markets/statistics-equities/daily/data/{yyyymm}.zip
-    中身は1日1PDFがそのまま束ねられたZIP（例: BO_C0076_20191202.pdf）。展開して
-    個々の日次PDFとして保存する。
+    中身は1日1ファイルがそのまま束ねられたZIP。**1981年1月〜1999年3月はスキャン画像
+    （.tif/.TIF、実機確認で両方の大文字小文字が混在）、1999年4月以降はPDF**という
+    形式の境界がある（実機確認、2026-09-06。実は「ストレージ容量の見積もり」で
+    見つけていた1999年3月→4月のファイルサイズ激減と同じ境界で、単なる圧縮率の差では
+    なくスキャン画像→生成PDFへの形式そのものの切り替えだった）。展開して個々の
+    日次ファイルを、元の拡張子（.pdf/.tif）を保ったまま保存する。
   - 形式B確定済み: https://www.jpx.co.jp/markets/statistics-equities/daily/data/{yyyymm}.pdf
     JPXが確定アーカイブへ移行済みの月のみ200を返す。移行はかなりの遅延（実機確認、
     2026-09-06: 確定アーカイブは2024年12月分までで、それ以降は約20ヶ月の遅れ）が
@@ -73,9 +77,11 @@ CONFIRMED_START_YEAR_MONTH = (2020, 1)
 DEFAULT_DB_PATH = "/data/index.db"
 DEFAULT_DATA_DIR = "/data/raw"
 
-# ZIP内の日次PDFファイル名末尾から日付を抽出する（例: BO_C0076_20191202.pdf）。
-# プレフィックス自体は年代によって変わりうるため、末尾の8桁日付のみに依存する。
-DAILY_PDF_DATE_RE = re.compile(r"(\d{4})(\d{2})(\d{2})\.pdf$")
+# ZIP内の日次ファイル名末尾から日付・拡張子を抽出する（例: BO_C0076_20191202.pdf、
+# 19900104.TIF）。プレフィックス自体は年代によって変わりうるため、末尾の8桁日付＋
+# 拡張子のみに依存する。1999年3月以前は.tif/.TIF（大文字小文字混在、実機確認）、
+# 1999年4月以降は.pdf。大文字小文字を区別せずどちらも受け付ける。
+DAILY_FILE_DATE_RE = re.compile(r"(\d{4})(\d{2})(\d{2})\.(pdf|tif)$", re.IGNORECASE)
 
 
 def setup_logger() -> logging.Logger:
@@ -125,28 +131,48 @@ def _http_get(url: str, max_retries: int = 5) -> bytes:
             time.sleep(min(60, 2**attempt))
 
 
-def legacy_daily_path(data_dir: Path, date_str: str) -> Path:
-    return date_hierarchy_dir(data_dir / "legacy-daily", date_str) / "stq.pdf"
+def legacy_daily_path(data_dir: Path, date_str: str, ext: str = "pdf") -> Path:
+    return date_hierarchy_dir(data_dir / "legacy-daily", date_str) / f"stq.{ext}"
 
 
 def extract_legacy_zip(zip_bytes: bytes, data_dir: Path, logger: logging.Logger) -> int:
-    """ZIP内の日次PDFを個々に展開・保存する。戻り値は保存したファイル数。
-    ファイル名から日付を抽出できないエントリは警告してスキップする。"""
+    """ZIP内の日次ファイル（1999年3月以前は.tif/.TIF、1999年4月以降は.pdf）を個々に
+    展開・保存する。戻り値は保存したファイル数（既存ファイルはスキップするため、
+    再実行時は0になりうる＝正常）。ファイル名から日付を抽出できないエントリは
+    警告してスキップする。
+
+    ZIPに中身があったにもかかわらず、日付を認識できたエントリが1件も無かった場合は、
+    未知の形式が紛れ込んでいる可能性が高いためエラーとする（実際に2026-09-06、
+    .tif/.TIF未対応のまま実行し、該当月が0ファイルのまま誤って"done"になる不具合を
+    実機で発見した経緯があるため、同種の不具合を再発させない安全策）。「認識できた
+    件数」で判定し「保存できた件数」では判定しない点に注意（後者は既存ファイル
+    スキップと未知形式の両方で0になりうり、正常な再実行を誤検知してしまうため）。"""
     saved_count = 0
+    entry_count = 0
+    recognized_count = 0
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            m = DAILY_PDF_DATE_RE.search(info.filename)
+            entry_count += 1
+            m = DAILY_FILE_DATE_RE.search(info.filename)
             if not m:
                 logger.warning(f"日付を抽出できないためスキップ: {info.filename}")
                 continue
+            recognized_count += 1
             date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-            dest = legacy_daily_path(data_dir, date_str)
+            ext = m.group(4).lower()
+            dest = legacy_daily_path(data_dir, date_str, ext)
             if dest.exists():
                 continue
             save_atomic(dest, zf.read(info.filename))
             saved_count += 1
+
+    if entry_count > 0 and recognized_count == 0:
+        raise RuntimeError(
+            f"ZIPに{entry_count}件のエントリがあったが、日付を認識できたものが"
+            "1件も無かった（未対応の拡張子の可能性、ログのWARNING参照）"
+        )
     return saved_count
 
 

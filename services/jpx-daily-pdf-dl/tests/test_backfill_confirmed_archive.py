@@ -67,10 +67,37 @@ def test_extract_legacy_zip_saves_each_daily_pdf(tmp_path: Path) -> None:
     assert (tmp_path / "legacy-daily" / "2019" / "12" / "03" / "stq.pdf").read_bytes() == b"day2"
 
 
-def test_extract_legacy_zip_skips_entries_without_date(tmp_path: Path) -> None:
-    zip_bytes = _make_zip({"readme.txt": b"not a daily pdf"})
+def test_extract_legacy_zip_raises_when_no_entry_recognized(tmp_path: Path) -> None:
+    # 日付を認識できるエントリが1件も無い場合はエラーとする（2026-09-06追加。
+    # .tif/.TIF未対応のまま実行し、該当月が0ファイルのまま誤ってdoneになった
+    # 実機不具合の再発防止策）
+    zip_bytes = _make_zip({"readme.txt": b"not a daily file"})
+    with pytest.raises(RuntimeError, match="日付を認識できたものが"):
+        bca.extract_legacy_zip(zip_bytes, tmp_path, TEST_LOGGER)
+
+
+def test_extract_legacy_zip_supports_tif_extension(tmp_path: Path) -> None:
+    # 1999年3月以前はTIFF形式（.tif/.TIF混在）
+    zip_bytes = _make_zip({
+        "19900104.TIF": b"scan1",
+        "19900105.tif": b"scan2",
+    })
     saved_count = bca.extract_legacy_zip(zip_bytes, tmp_path, TEST_LOGGER)
-    assert saved_count == 0
+
+    assert saved_count == 2
+    assert (tmp_path / "legacy-daily" / "1990" / "01" / "04" / "stq.tif").read_bytes() == b"scan1"
+    assert (tmp_path / "legacy-daily" / "1990" / "01" / "05" / "stq.tif").read_bytes() == b"scan2"
+
+
+def test_extract_legacy_zip_does_not_raise_when_some_entries_unrecognized(tmp_path: Path) -> None:
+    # 一部だけ未認識のエントリが混ざっていても、他に認識できたものがあればエラーに
+    # しない（警告ログのみ）
+    zip_bytes = _make_zip({
+        "readme.txt": b"not a daily file",
+        "BO_C0076_20191202.pdf": b"day1",
+    })
+    saved_count = bca.extract_legacy_zip(zip_bytes, tmp_path, TEST_LOGGER)
+    assert saved_count == 1
 
 
 def test_extract_legacy_zip_skips_existing_files(tmp_path: Path) -> None:
