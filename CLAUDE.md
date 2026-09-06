@@ -73,14 +73,15 @@ Python 3.12（stdlib中心）を各サービスの既定言語とする。型ヒ
   日次株式相場表PDFを取得・保存する。**個人利用限定**（JPX利用規約により商用目的の
   二次利用・生成AIによる不適切な利用は不可のため）。サービス本体（形式C＋形式Bの
   `03.html`列挙分）・Mac Miniへのデプロイ・Slack通知・バックフィル進捗レポート・
-  形式A/形式B確定済み過去年分の一回限りバックフィルスクリプトまで実装・実機動作
-  確認済み。詳細は`services/jpx-daily-pdf-dl/docs/file_download_design.md`参照。
+  形式A/形式B確定済み過去年分の一回限りバックフィルまで実装・実行完了（468＋60ヶ月分、
+  約32.4GB、エラー0件、2026-09-06）。詳細は
+  `services/jpx-daily-pdf-dl/docs/file_download_design.md`参照。
 
 ## 次にやること（未着手）
 
-- `services/jpx-daily-pdf-dl/`の形式A・形式B確定済み過去年分バックフィルの実行
-  （スクリプト自体は実装済み、実行自体は未着手。1981年〜2019年分は件数が多く、
-  完了までかなりの時間がかかる見込み）
+- `services/jpx-daily-pdf-dl/`のバックフィル進捗レポートのSlack通知方法の見直し
+  （現状: GitHub Actions Artifact経由。指摘: Mac Mini実行時にHTML添付でSlackへ
+  直接送るべき。Slack Files API（Bot Token＋`files:write`）が必要、未着手）
 - ウェアハウス層・マート層・アプリの設計（別リポジトリ、将来着手）
 - **前日終値の低遅延取得**（新規サービス、将来着手、2026-09-06決定）: `jpx-daily-pdf-dl`
   のPDF日報は実測で2営業日以上の遅延があり、「翌日に前日終値を取得する」用途には
