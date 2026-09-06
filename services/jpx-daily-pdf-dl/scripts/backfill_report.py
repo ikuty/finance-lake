@@ -112,7 +112,7 @@ def render_html(year_months: list[tuple[int, int]], done: set[tuple[int, int]]) 
 <title>jpx-daily-pdf-dl バックフィル進捗</title>
 <style>
   body {{ font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
-          margin: 12px; color: #222; }}
+          margin: 12px; color: #222; background: #fff; }}
   h1 {{ font-size: 13px; font-weight: normal; margin: 0 0 6px; }}
   #summary {{ margin-bottom: 8px; }}
   table {{ border-collapse: collapse; }}
