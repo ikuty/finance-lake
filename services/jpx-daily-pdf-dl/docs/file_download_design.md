@@ -300,6 +300,13 @@ GitHub ActionsのArtifactとしてアップロードする。DBファイル自�
   （生成されたHTMLを持ち帰る）はこのactionではできないため、Ubuntuランナー標準搭載の
   素の`ssh`/`scp`を使う（新規の依存を増やさない）。
 - `actions/upload-artifact`でアップロードする（既定の保持期間のまま、追加設定なし）。
+- **Slack通知**（2026-09-06追加）: レポート生成のサマリ行と、アップロードした
+  Artifactへのリンク（`actions/upload-artifact`の`artifact-url`出力）をSlackへ通知
+  する。GitHub Actions側に新規Secret`SLACK_WEBHOOK_URL`の登録が必要（Mac Mini上の
+  `.env`とは別の場所。値は使い回してよい）。未設定でも通知がスキップされるだけで
+  デプロイ自体は失敗しない（サービス本体の`send_slack_notification`と同じ設計）。
+  Artifactのダウンロードには閲覧側もGitHubへのログインが必要（公開リポジトリでも
+  匿名ダウンロードはGitHub側の制限で不可）。個人利用のため実害は無い。
 - **実行タイミングについての留保**: デプロイは手動トリガー（`workflow_dispatch`）で
   コード変更時にしか実行されないため、レポートの更新頻度もそれに従う（アプリの
   デプロイ頻度とデータの進捗確認頻度は本来別の関心事）。バックフィル作業を追跡する

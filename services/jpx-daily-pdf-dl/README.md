@@ -88,6 +88,14 @@ python3 scripts/backfill_report.py --db-path /home/ikuty/finance-lake/data/jpx-d
 転送しない）。ワークフロー実行後、GitHubの当該Actionsランのページから
 `jpx-backfill-report`という名前のArtifactをダウンロードできる。
 
+GitHub Actions Secretsに`SLACK_WEBHOOK_URL`を登録しておくと（Mac Mini上の`.env`とは
+別の場所への登録が必要、値は使い回してよい）、サマリとArtifactへのリンクをSlackへ
+通知する。未設定でも通知がスキップされるだけでデプロイは失敗しない。
+
+```
+gh secret set SLACK_WEBHOOK_URL --repo ikuty/finance-lake
+```
+
 ```
 python3 scripts/backfill_report.py --db-path ... --end-year-month 2025-01
 ```

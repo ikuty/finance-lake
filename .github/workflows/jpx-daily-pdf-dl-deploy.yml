@@ -6,6 +6,11 @@ name: jpx-daily-pdf-dl - Deploy to Mac Mini
 #
 # Secrets・事前準備は edinet-dl-deploy.yml と共通（Tailscale OAuthクライアント、
 # SSH_PRIVATE_KEY、MAC_MINI_HOST、MAC_MINI_USER）。
+#
+# 加えて、バックフィル進捗レポートのSlack通知には SLACK_WEBHOOK_URL という
+# GitHub Actions Secretが必要（2026-09-06追加）。Mac Mini上の.envに設定している
+# ものとは別の場所（GitHub Actions側）に登録する必要がある（値は同じものを使い回して
+# よい）。未設定でも通知がスキップされるだけでデプロイ自体は失敗しない。
 
 on:
   workflow_dispatch: {}
@@ -40,6 +45,7 @@ jobs:
       # appleboy/ssh-actionはリモートでのコマンド実行のみでファイル転送は行わないため、
       # 素のssh/scp（Ubuntuランナーに標準搭載）を使う。新規の依存は追加しない。
       - name: Generate backfill report on Mac Mini and fetch it
+        id: generate_report
         run: |
           mkdir -p ~/.ssh
           cat > ~/.ssh/id_ed25519 << 'KEYEOF'
@@ -47,20 +53,38 @@ jobs:
           KEYEOF
           chmod 600 ~/.ssh/id_ed25519
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519"
-          ssh $SSH_OPTS ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }} \
+          SUMMARY=$(ssh $SSH_OPTS ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }} \
             "cd /home/${{ secrets.MAC_MINI_USER }}/finance-lake/services/jpx-daily-pdf-dl && \
              python3 scripts/backfill_report.py \
                --db-path /home/${{ secrets.MAC_MINI_USER }}/finance-lake/data/jpx-daily-pdf-dl/index.db \
-               --output /tmp/jpx-backfill-report.html"
+               --output /tmp/jpx-backfill-report.html")
+          echo "$SUMMARY"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
           scp $SSH_OPTS \
             ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }}:/tmp/jpx-backfill-report.html \
             backfill_report.html
 
       - name: Upload backfill report as GitHub Actions artifact
+        id: upload_report
         uses: actions/upload-artifact@v4
         with:
           name: jpx-backfill-report
           path: backfill_report.html
+
+      # Artifactのダウンロードには閲覧側もGitHubへのログインが必要（公開リポジトリでも
+      # 匿名ダウンロードはGitHub側の制限で不可）。個人利用のため実害は無い。
+      - name: Notify Slack with report link
+        run: |
+          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            echo "SLACK_WEBHOOK_URL未設定のため通知をスキップします"
+            exit 0
+          fi
+          TEXT="📊 jpx-daily-pdf-dl バックフィル進捗レポート
+          ${{ steps.generate_report.outputs.summary }}
+          ${{ steps.upload_report.outputs.artifact-url }}"
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d "$PAYLOAD" "${{ secrets.SLACK_WEBHOOK_URL }}"
 
 # docker run --rm 方式（コンテナ内にデーモンを置かない）のため、pull後の再起動や
 # サービス再読み込みは不要。次回のsystemdタイマー実行から新しいイメージが使われる。
