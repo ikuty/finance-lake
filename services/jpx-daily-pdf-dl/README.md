@@ -61,6 +61,20 @@ docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest -
 失敗件数、ダウンロード件数・サイズ、リトライ発生回数、空き容量）を1回の実行につき1通
 Slackへ通知する（`edinet-dl`と同じ設計）。未設定なら通知はスキップされる。
 
+## バックフィル進捗レポート
+
+形式A（1981-2019年）・形式B確定済み過去年分（2020年〜前月）のバックフィル状況を、
+年×月の表形式（バックフィル済みなら`*`、未実施なら空欄）でHTML1枚に出力する。
+バックフィルスクリプト自体は未実装だが、このレポートは先に使える（未実施なら全マス
+空欄になるだけ）。Dockerを経由せず、Mac Miniホスト上のPython3から直接実行できる
+（標準ライブラリのみで完結）。
+
+```
+python3 scripts/backfill_report.py --db-path /home/ikuty/finance-lake/data/jpx-daily-pdf-dl/index.db --output backfill_report.html
+```
+
+生成された`backfill_report.html`をブラウザで開いて確認する。
+
 ## テスト・型チェック
 
 ```

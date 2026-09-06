@@ -34,8 +34,15 @@
   共通の共有unit`finance-lake-shutdown.service`（リポジトリ直下）が担う。
 - Slack通知実装済み（`edinet-dl`と同じ設計。`SLACK_WEBHOOK_URL`未設定なら通知スキップ。
   詳細は`docs/file_download_design.md`「Slack通知の設計」参照）。
+- バックフィル進捗レポート（`scripts/backfill_report.py`）実装済み。バックフィル
+  スクリプト自体が無くても、残作業の一覧として先に使える（`pytest`44件・
+  `mypy --strict`ともにパス）。
 - 形式A・形式Bの確定済み過去年分の一回限りバックフィルスクリプトは未実装。
+  進捗記録の粒度は月単位（`YYYY-MM`）に統一済み（バックフィル進捗レポートの
+  マス目に合わせた、2026-09-06決定）。
 
 ## 次にやること（未着手）
 
 - 形式A・形式Bの確定済み過去年分の一回限りバックフィルスクリプト
+  （`fetch_progress`への進捗記録は月単位`YYYY-MM`で、`backfill_report.py`が
+  そのまま読める形式にすること）
