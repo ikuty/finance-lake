@@ -26,7 +26,7 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Pull latest image on Mac Mini
+      - name: Pull latest image and sync repo checkout on Mac Mini
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.MAC_MINI_HOST }}
@@ -35,7 +35,19 @@ jobs:
           # jpx-daily-pdf-dl.serviceは`jpx-daily-pdf-dl:latest`という（レジストリ接頭辞の
           # 無い）ローカルタグを参照しているため、pull後に同じタグへ付け替える
           # （edinet-dlで実機確認済みの同種の不具合を踏まえた対応）。
+          #
+          # git pullも併せて行う（2026-09-06追加）。backfill_report.pyは後続の
+          # ステップでMac Mini上のgitチェックアウトから直接`python3`実行するため、
+          # Dockerイメージのpullだけでは更新されない。これを怠ると、デプロイの
+          # たびに古いスクリプトのままレポートが生成され続けるという不具合が実機で
+          # 発生した（backfill_report.pyの修正後もDEFAULT_LAG_MONTHSの古い値が
+          # 使われ続けていた）。detached HEADにはせず、mainブランチのまま
+          # fast-forwardする（このチェックアウトはユーザーが手動操作でも使うため、
+          # ブランチが外れた状態にしない）。
           script: |
+            cd /home/${{ secrets.MAC_MINI_USER }}/finance-lake
+            git checkout main
+            git pull origin main
             docker pull ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest
             docker tag ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest jpx-daily-pdf-dl:latest
 
