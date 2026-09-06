@@ -332,6 +332,43 @@ GitHub ActionsのArtifactとしてアップロードする。DBファイル自�
   用途で毎日確認したい場合は、スケジュール実行（`schedule`トリガー）の専用ワークフロー
   に分離することも検討の余地がある（未実施）。
 
+## 確定済みアーカイブの一回限りバックフィルスクリプト（実装、2026-09-06）
+
+`scripts/backfill_confirmed_archive.py`として実装（実機のJPXサイトに対して2019年
+12月・2020年1月分で実データ取得を確認済み）。サービス本体（`fetch_jpx_daily.py`）と
+DB・データディレクトリを共有する（`DB_PATH`・`DATA_DIR`は同じ環境変数）。
+
+```
+python3 scripts/backfill_confirmed_archive.py                 # 形式A・確定済み形式Bの両方
+python3 scripts/backfill_confirmed_archive.py --legacy-only    # 形式Aのみ
+python3 scripts/backfill_confirmed_archive.py --confirmed-only # 確定済み形式Bのみ
+python3 scripts/backfill_confirmed_archive.py --force          # 既にdoneな月も再取得
+```
+
+- **形式A**（1981年1月〜2019年12月、468ヶ月）: `data/{yyyymm}.zip`を取得し、中身の
+  日次PDF（例: `BO_C0076_20191202.pdf`）を個々に`legacy-daily/{yyyy}/{mm}/{dd}/stq.pdf`
+  へ展開する。ファイル名の接頭辞は年代によって変わりうるため、末尾の8桁日付のみを
+  正規表現で抽出する（実機確認: 1981年1月分93MB・2019年12月分17MB・21ファイル、
+  いずれも想定通り取得できた）。
+- **確定済み形式B**（2020年1月〜前月）: `data/{yyyymm}.pdf`を月ごとに取得し、
+  `monthly-ohlc/{yyyy}/{mm}/stq_monthly.pdf`へ保存する。サービス本体が`03.html`
+  経由で既に取得済みの月（後にJPXが確定アーカイブへ移行したもの）を上書きする形に
+  なるが、内容は同じはずなので問題ない。
+- **404の扱い**: JPXの確定アーカイブへの移行にはかなりの遅延（実機確認で約1年以上）
+  があるため、直近の一定期間は`data/{yyyymm}.pdf`が404を返す。これは想定内の状態
+  （「まだ確定していないだけ」）であり、`fetch_progress`にエラーとして記録せず
+  黙ってスキップする（実機で2025年8月分の404を確認済み）。次回再実行時に再度
+  チェックされるだけで、無限に404を吐き続けても実害は無い（このパスの確認自体が、
+  JPX側の確定移行状況を把握する手段でもある）。
+- **進捗管理**: サービス本体と同じ`fetch_progress`テーブルを共有する。粒度は
+  月単位（`YYYY-MM`）で、`backfill_report.py`がそのまま読める（「冪等性・進捗管理」
+  節参照）。
+- **systemdタイマーには含めない**。手動実行のみ（`edinet-dl`の`migrate_zip_to_gz.py`
+  と同じ位置づけ）。
+- **未実施**: スクリプト自体は実装・実機確認済みだが、全件（468ヶ月＋確定済み形式B
+  分）の実行はまだ行っていない。1981年〜2019年分は件数が多く、完了までかなりの
+  時間がかかる見込み。
+
 ## 出典表記
 
 リポジトリルートの`README.md`に、EDINETと同様の形式で1文追加する。

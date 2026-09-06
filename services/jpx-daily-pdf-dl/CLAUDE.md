@@ -34,15 +34,18 @@
   共通の共有unit`finance-lake-shutdown.service`（リポジトリ直下）が担う。
 - Slack通知実装済み（`edinet-dl`と同じ設計。`SLACK_WEBHOOK_URL`未設定なら通知スキップ。
   詳細は`docs/file_download_design.md`「Slack通知の設計」参照）。
-- バックフィル進捗レポート（`scripts/backfill_report.py`）実装済み。バックフィル
-  スクリプト自体が無くても、残作業の一覧として先に使える（`pytest`44件・
-  `mypy --strict`ともにパス）。
-- 形式A・形式Bの確定済み過去年分の一回限りバックフィルスクリプトは未実装。
-  進捗記録の粒度は月単位（`YYYY-MM`）に統一済み（バックフィル進捗レポートの
-  マス目に合わせた、2026-09-06決定）。
+- バックフィル進捗レポート（`scripts/backfill_report.py`）実装済み。デプロイ
+  ワークフロー実行のたびにMac Mini上で生成し、GitHub ActionsのArtifactとして
+  アップロード、Slackにも通知する。
+- 形式A・形式B確定済み過去年分の一回限りバックフィルスクリプト
+  （`scripts/backfill_confirmed_archive.py`）実装済み。実機（JPXサイト）に対して
+  実データで動作確認済み（2019年12月・2020年1月分で確認）。進捗記録の粒度は
+  月単位（`YYYY-MM`）で、`backfill_report.py`がそのまま読める（`pytest`75件・
+  `mypy --strict`ともにパス）。**実行自体はまだ行っていない**（1981年〜2019年分は
+  件数が多く、完了までかなりの時間がかかる見込み）。
 
 ## 次にやること（未着手）
 
-- 形式A・形式Bの確定済み過去年分の一回限りバックフィルスクリプト
-  （`fetch_progress`への進捗記録は月単位`YYYY-MM`で、`backfill_report.py`が
-  そのまま読める形式にすること）
+- `backfill_confirmed_archive.py`の実行（形式A: 1981-2019年、468ヶ月分。形式B
+  確定済み過去年分: 2020年〜前月）。Mac Mini上で`docker run`のENTRYPOINTを
+  上書きして実行するか、venv経由でホストから直接実行する

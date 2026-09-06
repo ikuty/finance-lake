@@ -19,8 +19,9 @@
   最新の月は随時更新されうるため毎回上書き取得する。
 
 形式A（レガシー日次、1981〜2019年）・形式Bの確定済み過去年分は、今後増えることも変わる
-ことも無い確定データのため、このサービスの対象外。一回限りの使い捨てスクリプトで別途
-取得する（未実装）。
+ことも無い確定データのため、このサービスの対象外。一回限りの使い捨てスクリプト
+（[`scripts/backfill_confirmed_archive.py`](#確定済みアーカイブの一回限りバックフィル)）
+で別途取得する。
 
 ## セットアップ
 
@@ -61,13 +62,33 @@ docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest -
 失敗件数、ダウンロード件数・サイズ、リトライ発生回数、空き容量）を1回の実行につき1通
 Slackへ通知する（`edinet-dl`と同じ設計）。未設定なら通知はスキップされる。
 
+## 確定済みアーカイブの一回限りバックフィル
+
+形式A（1981年1月〜2019年12月）・形式B確定済み過去年分（2020年1月〜前月）を取得する
+一回限りの使い捨てスクリプト。今後増えることも変わることも無い確定データのため、
+systemdタイマーには含めない。Dockerを経由せず、Mac Miniホスト上のPython3から
+直接実行できる（標準ライブラリのみで完結）。
+
+```
+python3 scripts/backfill_confirmed_archive.py                 # 形式A・確定済み形式Bの両方
+python3 scripts/backfill_confirmed_archive.py --legacy-only    # 形式Aのみ
+python3 scripts/backfill_confirmed_archive.py --confirmed-only # 確定済み形式Bのみ
+python3 scripts/backfill_confirmed_archive.py --force          # 既にdoneな月も再取得
+```
+
+`DB_PATH`・`DATA_DIR`はサービス本体と共通（`.env`を読む場合は`--env-file`相当を
+自分でexportするか、環境変数を直接指定する）。確定アーカイブへまだ移行していない
+月（直近の一定期間）は404になるが、これはエラー扱いにせず黙ってスキップする
+（次回再実行時に再チェックされる）。中断しても`fetch_progress`により未取得分だけ
+再開される。1981年〜2019年分（468ヶ月）は件数が多く、完了までかなりの時間がかかる
+見込み。
+
 ## バックフィル進捗レポート
 
 形式A（1981-2019年）・形式B確定済み過去年分（2020年〜前月）のバックフィル状況を、
 年×月の表形式（バックフィル済みなら`*`、未実施なら空欄）でHTML1枚に出力する。
-バックフィルスクリプト自体は未実装だが、このレポートは先に使える（未実施なら全マス
-空欄になるだけ）。Dockerを経由せず、Mac Miniホスト上のPython3から直接実行できる
-（標準ライブラリのみで完結）。
+Dockerを経由せず、Mac Miniホスト上のPython3から直接実行できる（標準ライブラリの
+みで完結）。
 
 ```
 python3 scripts/backfill_report.py --db-path /home/ikuty/finance-lake/data/jpx-daily-pdf-dl/index.db --output backfill_report.html

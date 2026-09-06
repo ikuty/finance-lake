@@ -65,20 +65,20 @@ Python 3.12（stdlib中心）を各サービスの既定言語とする。型ヒ
 する（over engineering回避）。他言語・他フレームワークが必要な場合はサービスごとに
 判断してよいが、まずはこの構成を既定とする。
 
-## 現状（2026-09-05時点）
+## 現状（2026-09-06時点）
 
 - `services/edinet-dl/`: 実装・デプロイ済み。詳細は`services/edinet-dl/README.md`・
   `services/edinet-dl/CLAUDE.md`参照。
 - `services/jpx-daily-pdf-dl/`: 2つ目のレイク層サービス。日本取引所グループ（JPX）の
   日次株式相場表PDFを取得・保存する。**個人利用限定**（JPX利用規約により商用目的の
   二次利用・生成AIによる不適切な利用は不可のため）。サービス本体（形式C＋形式Bの
-  `03.html`列挙分）は実装・実機（JPXサイト）での動作確認済み。Mac Miniへのデプロイ、
-  および形式A・形式Bの確定済み過去年分の一回限りバックフィルスクリプトは未実施。
-  詳細は`services/jpx-daily-pdf-dl/docs/file_download_design.md`参照。
+  `03.html`列挙分）・Mac Miniへのデプロイ・Slack通知・バックフィル進捗レポート・
+  形式A/形式B確定済み過去年分の一回限りバックフィルスクリプトまで実装・実機動作
+  確認済み。詳細は`services/jpx-daily-pdf-dl/docs/file_download_design.md`参照。
 
 ## 次にやること（未着手）
 
-- `services/jpx-daily-pdf-dl/`のMac Miniへのデプロイ
-- `services/jpx-daily-pdf-dl/`の一回限りバックフィルスクリプト（形式A・形式Bの
-  確定済み過去年分）
+- `services/jpx-daily-pdf-dl/`の形式A・形式B確定済み過去年分バックフィルの実行
+  （スクリプト自体は実装済み、実行自体は未着手。1981年〜2019年分は件数が多く、
+  完了までかなりの時間がかかる見込み）
 - ウェアハウス層・マート層・アプリの設計（別リポジトリ、将来着手）
