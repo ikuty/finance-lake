@@ -48,10 +48,10 @@ sudo systemctl enable --now jpx-daily-pdf-dl.timer
 docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest
 ```
 
-`--force`で、既に`done`な期間も対象に含める（既存ファイルは引き続き存在チェックで
-スキップされるため、無駄な再ダウンロードは発生しない。`edinet-dl`の`--force`と同じ
-意味）。個別ファイルを強制的に上書きしたい場合は、該当ファイルを手動で削除してから
-再実行する。
+`--force`は、DBの状態・ファイルの存在の両方を無視して必ず再ダウンロードする
+（`edinet-dl`の`--force`とは意図的に異なる。edinet-dlは1日=複数ファイルという粒度
+のため個々のファイルは存在すればスキップするが、jpxは1期間=1ファイルのため、その
+使い分けが成立しない。単純に「現在の状態を無視して取得する」が`--force`の定義）。
 
 ```
 docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest --force

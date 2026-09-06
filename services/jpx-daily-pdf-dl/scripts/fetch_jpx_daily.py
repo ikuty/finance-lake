@@ -253,10 +253,16 @@ def fetch_detailed_daily(
     """形式C（詳細日次）を、前日から days_window 日分さかのぼって取得する。
     index.html・00-archives-01ページを読んで日付->URLの対応表を作り、対象日が
     そこに含まれていればダウンロードする（含まれない＝週末・休日で提出が無いか、
-    ローリングウィンドウの範囲外）。force=Trueの場合、既にdoneな日付も対象に含める
-    （ただし既存ファイルは引き続き存在チェックでスキップされ、無駄な再ダウンロードは
-    発生しない。edinet-dlの--forceと同じ意味）。statsを渡すとSlack通知向けの集計
-    （processed/failed/ダウンロード件数・サイズ）を記録する。"""
+    ローリングウィンドウの範囲外）。
+
+    force=Trueの場合、DBの状態・ファイルの存在の両方を無視して必ず再ダウンロードする
+    （2026-09-06決定。「forceは現在の状態を無視して取得する」という定義そのものであり、
+    edinet-dlの--force（1日=複数ファイルという粒度で、個々のファイルは存在すれば
+    スキップする）とは意図的に異なる。jpxは1期間=1ファイルのため、その粒度の使い分けが
+    そもそも成立しない）。force=Falseの場合のみ、DBに記録が無いのにファイルだけ既に
+    存在するケース（自己修復）で無駄なネットワークアクセスを避けるため`dest.exists()`
+    を見る。statsを渡すとSlack通知向けの集計（processed/failed/ダウンロード件数・
+    サイズ）を記録する。"""
     if stats is None:
         stats = RunStats()
     index_html = _http_get(f"https://{BASE_HOST}{DAILY_INDEX_PATH}", stats=stats).decode("utf-8", errors="ignore")
@@ -280,7 +286,7 @@ def fetch_detailed_daily(
 
         url = f"https://{BASE_HOST}{rel_path}"
         dest = detailed_daily_path(data_dir, date_str)
-        if dest.exists():
+        if not force and dest.exists():
             store_progress(conn, date_str, FORMAT_DETAILED_DAILY, "done", url, None)
             stats.processed.append((date_str, FORMAT_DETAILED_DAILY))
             continue

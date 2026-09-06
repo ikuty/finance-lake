@@ -221,7 +221,7 @@ def test_fetch_detailed_daily_skips_already_done(tmp_path: Path, monkeypatch: py
     assert mock_get.call_count == 2
 
 
-def test_fetch_detailed_daily_force_revisits_done_dates_but_skips_existing_files(
+def test_fetch_detailed_daily_force_revisits_done_dates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     conn = fjd.init_db(tmp_path / "index.db")
@@ -235,12 +235,12 @@ def test_fetch_detailed_daily_force_revisits_done_dates_but_skips_existing_files
     ]) as mock_get:
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, force=True)
 
-    # force=Trueでdoneでも対象に含めるが、ファイルが既に存在しない今回のケースでは
+    # force=Trueならdoneな日付も対象に含める。ファイルがまだ存在しない今回のケースでは
     # 実際にダウンロードが必要になるため、index/archive+PDF本体で3回呼ばれる
     assert mock_get.call_count == 3
 
 
-def test_fetch_detailed_daily_force_skips_download_when_file_already_exists(
+def test_fetch_detailed_daily_force_redownloads_even_when_file_already_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     conn = fjd.init_db(tmp_path / "index.db")
@@ -252,13 +252,36 @@ def test_fetch_detailed_daily_force_skips_download_when_file_already_exists(
     dest.write_bytes(b"existing-content")
     index_html = '<a href="/x/stq_20260903.pdf">a</a>'
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[index_html.encode("utf-8"), b""]) as mock_get:
+    with patch("fetch_jpx_daily._http_get", side_effect=[
+        index_html.encode("utf-8"), b"", b"new-content",
+    ]) as mock_get:
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, force=True)
 
-    # index/archiveの2回は呼ばれるが、force=Trueでも既存ファイルは再ダウンロードしない
-    # （edinet-dlの--forceと同じ意味）
+    # force=Trueは「現在の状態（DB・ファイルの両方）を無視して取得する」という定義のため、
+    # 既存ファイルの有無に関わらず必ず再ダウンロードする（index/archive+PDF本体で3回）
+    assert mock_get.call_count == 3
+    assert dest.read_bytes() == b"new-content"
+
+
+def test_fetch_detailed_daily_skips_download_when_file_exists_and_not_forced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fjd.init_db(tmp_path / "index.db")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
+    # DBには記録が無いが、ファイルだけ既に存在する状態（自己修復ケース）
+    dest = fjd.detailed_daily_path(tmp_path, "2026-09-03")
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"existing-content")
+    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+
+    with patch("fetch_jpx_daily._http_get", side_effect=[index_html.encode("utf-8"), b""]) as mock_get:
+        fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER)
+
+    # force無しの場合のみ、無駄なネットワークアクセスを避けるため既存ファイルはスキップする
     assert mock_get.call_count == 2
     assert dest.read_bytes() == b"existing-content"
+    assert fjd.already_done(conn, "2026-09-03", fjd.FORMAT_DETAILED_DAILY)
 
 
 def test_fetch_detailed_daily_marks_error_on_download_failure(
