@@ -469,11 +469,13 @@ def test_build_slack_message_success() -> None:
     )
     message = fjd.build_slack_message(stats, free_bytes=421_300_000_000)
     assert message.startswith("✅")
-    assert "形式C（詳細日次）: 処理1件 / 成功1件" in message
-    assert "形式B（月次簡易OHLC）: 処理1件 / 成功1件" in message
+    assert "詳細日次: 処理1件 / 成功1件" in message
+    assert "月次OHLC（簡易）: 処理1件 / 成功1件" in message
     assert "2件" in message
     assert "リトライ発生: 1回" in message
     assert "空き容量: 392.4GB" in message
+    # 内部の分類名（形式A/B/C）は通知を見る側には意味を持たないため出さない
+    assert "形式" not in message
 
 
 def test_build_slack_message_failure_includes_error_detail() -> None:
@@ -483,8 +485,8 @@ def test_build_slack_message_failure_includes_error_detail() -> None:
     )
     message = fjd.build_slack_message(stats, free_bytes=0)
     assert message.startswith("❌")
-    assert "形式C（詳細日次）: 処理1件 / 成功0件 / 失敗1件" in message
-    assert "失敗: 2026-09-03 (detailed-daily) (接続エラー boom)" in message
+    assert "詳細日次: 処理1件 / 成功0件 / 失敗1件" in message
+    assert "失敗: 2026-09-03 (詳細日次) (接続エラー boom)" in message
 
 
 def test_send_slack_notification_posts_json() -> None:

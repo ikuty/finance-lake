@@ -361,7 +361,16 @@ def format_bytes(n: int) -> str:
     return f"{mb:.1f}MB"
 
 
-def _format_counts(stats: RunStats, fmt: str, label: str) -> str:
+# Slack通知向けの表示名（形式A/B/Cという内部の分類名はドキュメント上の便宜的な呼び名で
+# あり、通知を見る側には意味を持たないため使わない。2026-09-06修正）。
+FORMAT_LABELS: dict[str, str] = {
+    FORMAT_DETAILED_DAILY: "詳細日次",
+    FORMAT_MONTHLY_OHLC: "月次OHLC（簡易）",
+}
+
+
+def _format_counts(stats: RunStats, fmt: str) -> str:
+    label = FORMAT_LABELS[fmt]
     n_processed = sum(1 for p in stats.processed if p[1] == fmt)
     n_failed = sum(1 for p in stats.failed if p[1] == fmt)
     if n_failed:
@@ -377,11 +386,11 @@ def build_slack_message(stats: RunStats, free_bytes: int) -> str:
     else:
         lines = ["✅ jpx-daily-pdf-dl 日次実行 成功"]
 
-    lines.append(_format_counts(stats, FORMAT_DETAILED_DAILY, "形式C（詳細日次）"))
-    lines.append(_format_counts(stats, FORMAT_MONTHLY_OHLC, "形式B（月次簡易OHLC）"))
+    lines.append(_format_counts(stats, FORMAT_DETAILED_DAILY))
+    lines.append(_format_counts(stats, FORMAT_MONTHLY_OHLC))
 
     for (period, fmt), message in stats.failed.items():
-        lines.append(f"失敗: {period} ({fmt}) ({message})")
+        lines.append(f"失敗: {period} ({FORMAT_LABELS[fmt]}) ({message})")
 
     lines.append(f"ダウンロード: {stats.downloaded_count}件 / {format_bytes(stats.downloaded_bytes)}")
     lines.append(f"リトライ発生: {stats.retry_count}回")
