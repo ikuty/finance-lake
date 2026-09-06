@@ -80,6 +80,9 @@ python3 scripts/backfill_report.py --db-path /home/ikuty/finance-lake/data/jpx-d
 バックフィルの対象ではないため。正確な確定境界が分かっている場合は`--end-year-month`
 で上書きできる。
 
+網掛け部分（常設サービス担当分）が実際にどこまで取得できているかは、月次の表とは
+別に、ページ上部の日次の表（形式C、年月×日）で確認できる。
+
 ```
 python3 scripts/backfill_report.py --db-path ... --end-year-month 2025-01
 ```

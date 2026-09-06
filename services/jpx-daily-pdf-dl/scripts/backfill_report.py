@@ -17,15 +17,21 @@
 あり、ダウンロード・展開の成否も月単位でしか意味を持たないため、この粒度変更に実質的な
 デメリットは無い。
 
-直近の期間（既定で当月から14ヶ月分）は「対象範囲外」として扱う（2026-09-06修正）。
-形式Cが直近13ヶ月程度をローリングウィンドウで継続的に担当しており、かつ形式Bの
-確定アーカイブへの移行には実機確認で約1年の遅れが観測されているため、この期間は
-そもそも一回限りのバックフィルの対象ではなく、常設サービス側の担当である。単純に
-「今月より前はすべて対象」としてしまうと、常設サービスの担当範囲がバックフィル未実施
-であるかのように誤表示されてしまう。正確な確定境界はJPX側の移行状況次第で動的にしか
-判定できない（使い捨てバックフィルスクリプト自身が確定パスへの直接アクセスで200/404を
-見て判定すべき事柄）ため、本レポートでは保守的な既定値を使い、`--end-year-month`で
-上書きできるようにする。
+直近の期間（既定で当月から14ヶ月分）は月次バックフィルの「対象範囲外」として扱う
+（2026-09-06修正）。形式Cが直近13ヶ月程度をローリングウィンドウで継続的に担当して
+おり、かつ形式Bの確定アーカイブへの移行には実機確認で約1年の遅れが観測されている
+ため、この期間はそもそも一回限りのバックフィルの対象ではなく、常設サービス側の
+担当である。単純に「今月より前はすべて対象」としてしまうと、常設サービスの担当
+範囲がバックフィル未実施であるかのように誤表示されてしまう。正確な確定境界は
+JPX側の移行状況次第で動的にしか判定できない（使い捨てバックフィルスクリプト自身が
+確定パスへの直接アクセスで200/404を見て判定すべき事柄）ため、本レポートでは
+保守的な既定値を使い、`--end-year-month`で上書きできるようにする。
+
+この「対象範囲外」の期間（常設サービス担当分）についても、どこまで実際に取得済み
+かを別途確認できるよう、月次の表とは分離した日次の表を上に表示する（2026-09-06
+追加）。対象は形式C（詳細日次）のみ（形式Bの03.html列挙分は月次粒度のため、月次の
+表と同じ粒度でしか意味を持たない）。日次の表の範囲は、月次バックフィルの対象範囲外
+となる年月の1日から、前日（`last_complete_day_jst()`）までとする。
 
 Usage:
     python3 backfill_report.py [--db-path /data/index.db] [--output backfill_report.html]
@@ -38,6 +44,7 @@ Python3から直接DBファイルを指定して実行できる。
 from __future__ import annotations
 
 import argparse
+import calendar
 import datetime
 import sqlite3
 from pathlib import Path
@@ -58,10 +65,17 @@ DEFAULT_LAG_MONTHS = 14
 
 FORMAT_LEGACY_DAILY = "legacy-daily"
 FORMAT_MONTHLY_OHLC = "monthly-ohlc"
+FORMAT_DETAILED_DAILY = "detailed-daily"
 
 
 def today_jst() -> datetime.date:
     return datetime.datetime.now(JST).date()
+
+
+def last_complete_day_jst() -> datetime.date:
+    """サービス本体(fetch_jpx_daily.py)と同じ理由で、日次表の終端は前日とする
+    （当日はまだ営業終了前で一覧に現れず、未実施と誤認されるため）。"""
+    return today_jst() - datetime.timedelta(days=1)
 
 
 def subtract_months(year: int, month: int, n: int) -> tuple[int, int]:
@@ -112,7 +126,46 @@ def load_done_year_months(db_path: Path) -> set[tuple[int, int]]:
     return done
 
 
-def render_html(year_months: list[tuple[int, int]], done: set[tuple[int, int]], display_through_year: int) -> str:
+def daily_service_dates(start_year: int, start_month: int, end_date: datetime.date) -> list[datetime.date]:
+    """常設サービス担当分（月次バックフィルの対象範囲外）の日次進捗を確認するための
+    日付一覧。(start_year, start_month)の1日からend_dateまでの実在する日付を返す。"""
+    dates: list[datetime.date] = []
+    year, month = start_year, start_month
+    while True:
+        _, days_in_month = calendar.monthrange(year, month)
+        for day in range(1, days_in_month + 1):
+            d = datetime.date(year, month, day)
+            if d > end_date:
+                return dates
+            dates.append(d)
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+
+
+def load_done_dates(db_path: Path, fmt: str) -> set[datetime.date]:
+    """fetch_progressテーブルから、指定formatでstatus='done'な日付の集合を返す。
+    DBファイルが無い場合は空集合を返す。"""
+    if not db_path.exists():
+        return set()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT period FROM fetch_progress WHERE format = ? AND status = 'done'",
+            (fmt,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {datetime.date.fromisoformat(period) for (period,) in rows}
+
+
+def render_monthly_table(
+    year_months: list[tuple[int, int]], done: set[tuple[int, int]], display_through_year: int
+) -> str:
+    """月次バックフィル（形式A・形式B確定済み過去年分）の表本体（<table>...</table>）を返す。"""
     in_scope = set(year_months)
     # 新しい年ほど上に来るよう降順（直近の進捗を確認する頻度の方が高いため）。
     # display_through_yearまでは、その年が丸ごと対象範囲外（全マスna）でも行を表示する
@@ -134,7 +187,36 @@ def render_html(year_months: list[tuple[int, int]], done: set[tuple[int, int]], 
         row_lines.append(f"<tr{row_class}><th>{year}</th>{''.join(cells)}</tr>")
 
     header = "<tr><th></th>" + "".join(f"<th>{m:02d}</th>" for m in range(1, 13)) + "</tr>"
+    return f'<table id="monthly-grid">\n{header}\n{"".join(row_lines)}\n</table>'
 
+
+def render_daily_table(dates_in_scope: list[datetime.date], done: set[datetime.date]) -> str:
+    """常設サービス担当分（形式Cの日次進捗）の表本体（<table>...</table>）を返す。
+    行は年月（新しい方が上）、列は日（01〜31、月に存在しない日はna）。"""
+    days_by_year_month: dict[tuple[int, int], set[int]] = {}
+    for d in dates_in_scope:
+        days_by_year_month.setdefault((d.year, d.month), set()).add(d.day)
+
+    year_months = sorted(days_by_year_month.keys(), reverse=True)
+
+    row_lines = []
+    for year, month in year_months:
+        present_days = days_by_year_month[(year, month)]
+        cells = []
+        for day in range(1, 32):
+            if day not in present_days:
+                cells.append('<td class="na"></td>')
+            elif datetime.date(year, month, day) in done:
+                cells.append('<td class="done">*</td>')
+            else:
+                cells.append("<td></td>")
+        row_lines.append(f"<tr><th>{year}-{month:02d}</th>{''.join(cells)}</tr>")
+
+    header = "<tr><th></th>" + "".join(f"<th>{d:02d}</th>" for d in range(1, 32)) + "</tr>"
+    return f'<table id="daily-grid">\n{header}\n{"".join(row_lines)}\n</table>'
+
+
+def render_page(daily_table_html: str, monthly_table_html: str) -> str:
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -143,36 +225,51 @@ def render_html(year_months: list[tuple[int, int]], done: set[tuple[int, int]], 
 <style>
   body {{ font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
           margin: 12px; color: #222; background: #fff; }}
-  h1 {{ font-size: 13px; font-weight: normal; margin: 0 0 6px; }}
-  #summary {{ margin-bottom: 8px; }}
+  h1 {{ font-size: 13px; font-weight: normal; margin: 0 0 14px; }}
+  h2 {{ font-size: 12px; font-weight: normal; margin: 0 0 4px; }}
+  section {{ margin-bottom: 16px; }}
+  .summary {{ margin-bottom: 6px; }}
   table {{ border-collapse: collapse; }}
-  th, td {{ border: 1px solid #ccc; width: 20px; height: 16px; text-align: center;
+  th, td {{ border: 1px solid #ccc; width: 18px; height: 16px; text-align: center;
             padding: 0; }}
   th {{ background: #f0f0f0; font-weight: normal; }}
   td.done {{ background: #cdeccd; }}
   td.na {{ background: #eee; }}
+  #monthly-grid th, #monthly-grid td {{ width: 20px; }}
   tr.boundary th, tr.boundary td {{ border-top: 2px solid #333; }}
-  #legend {{ margin-top: 8px; color: #666; }}
+  .legend {{ margin-top: 6px; color: #666; }}
 </style>
 </head>
 <body>
-<h1>jpx-daily-pdf-dl バックフィル進捗（形式A: 1981-2019 / 形式B確定済み過去年分: 2020-前月）</h1>
-<div id="summary"></div>
-<table id="grid">
-{header}
-{"".join(row_lines)}
-</table>
-<div id="legend">
+<h1>jpx-daily-pdf-dl バックフィル進捗</h1>
+
+<section>
+<h2>常設サービス担当分（形式C・日次、月次バックフィルの対象範囲外の期間）</h2>
+<div class="summary" id="daily-summary"></div>
+{daily_table_html}
+<div class="legend">* = 取得済み / 空欄 = 未取得 / 網掛け = 表の範囲外（月が存在しない日、または前日より後）</div>
+</section>
+
+<section>
+<h2>一回限りのバックフィル対象（形式A: 1981-2019 / 形式B確定済み過去年分: 2020-前月）</h2>
+<div class="summary" id="monthly-summary"></div>
+{monthly_table_html}
+<div class="legend">
 * = バックフィル済み / 空欄 = 未実施 / 網掛け = 対象範囲外
 （直近の一定期間は形式C・形式Bの03.html列挙分として常設サービスが担当するため対象外。
-確定境界は目安であり、正確には--end-year-monthで調整する）
+確定境界は目安であり、正確には--end-year-monthで調整する。上の日次の表で確認できる）
 </div>
+</section>
+
 <script>
-  var total = document.querySelectorAll("#grid td:not(.na)").length;
-  var doneCount = document.querySelectorAll("#grid td.done").length;
-  var pct = total ? (doneCount / total * 100).toFixed(1) : "0.0";
-  document.getElementById("summary").textContent =
-    "完了: " + doneCount + " / " + total + " ヶ月 (" + pct + "%)";
+  function summarize(gridId, unitLabel) {{
+    var total = document.querySelectorAll("#" + gridId + " td:not(.na)").length;
+    var doneCount = document.querySelectorAll("#" + gridId + " td.done").length;
+    var pct = total ? (doneCount / total * 100).toFixed(1) : "0.0";
+    return "完了: " + doneCount + " / " + total + " " + unitLabel + " (" + pct + "%)";
+  }}
+  document.getElementById("daily-summary").textContent = summarize("daily-grid", "日");
+  document.getElementById("monthly-summary").textContent = summarize("monthly-grid", "ヶ月");
 </script>
 </body>
 </html>
@@ -200,15 +297,29 @@ def main() -> None:
     else:
         end_year, end_month = default_confirmed_cutoff(today)
 
+    db_path = Path(args.db_path)
+
     year_months = backfillable_year_months(end_year, end_month)
-    done = load_done_year_months(Path(args.db_path))
-    html = render_html(year_months, done, display_through_year=today.year)
+    monthly_done = load_done_year_months(db_path)
+    monthly_table = render_monthly_table(year_months, monthly_done, display_through_year=today.year)
+
+    last_complete_day = last_complete_day_jst()
+    dates_in_scope = daily_service_dates(end_year, end_month, last_complete_day)
+    daily_done = load_done_dates(db_path, FORMAT_DETAILED_DAILY)
+    daily_table = render_daily_table(dates_in_scope, daily_done)
+
+    html = render_page(daily_table, monthly_table)
 
     output_path = Path(args.output)
     output_path.write_text(html, encoding="utf-8")
 
-    done_count = sum(1 for ym in year_months if ym in done)
-    print(f"{output_path} に出力しました（{done_count}/{len(year_months)}ヶ月完了）")
+    monthly_done_count = sum(1 for ym in year_months if ym in monthly_done)
+    daily_done_count = sum(1 for d in dates_in_scope if d in daily_done)
+    print(
+        f"{output_path} に出力しました"
+        f"（月次: {monthly_done_count}/{len(year_months)}ヶ月完了、"
+        f"日次: {daily_done_count}/{len(dates_in_scope)}日完了）"
+    )
 
 
 if __name__ == "__main__":
