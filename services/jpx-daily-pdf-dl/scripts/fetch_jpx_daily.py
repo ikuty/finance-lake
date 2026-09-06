@@ -58,6 +58,11 @@ JST = datetime.timezone(datetime.timedelta(hours=9))
 DEFAULT_DB_PATH = "/data/index.db"
 DEFAULT_DATA_DIR = "/data/raw"
 DEFAULT_LOG_PATH = "/data/logs/jpx-daily-pdf-dl.log"
+# ログファイルと同じディレクトリに保存する、直近実行のSlackメッセージ全文（改行保持）。
+# ログの"summary:"行は改行を" / "に置換して1行に潰しており、メッセージ本文自体にも
+# " / "が含まれるため後から元の複数行構造を復元できない。デプロイ時のCIがこの内容を
+# そのままSlackに転記できるようにするための専用ファイル（2026-09-06追加）。
+LAST_RUN_SUMMARY_FILENAME = "last_run_summary.txt"
 DEFAULT_DAYS_WINDOW = 3
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB
 LOG_BACKUP_COUNT = 5
@@ -412,6 +417,17 @@ def send_slack_notification(webhook_url: str, message: str, logger: logging.Logg
         logger.error(f"Slack通知の送信に失敗しました: {e}")
 
 
+def save_last_run_summary(log_path: str, message: str, logger: logging.Logger) -> None:
+    """直近実行のSlackメッセージ全文（改行保持）をログファイルと同じディレクトリに
+    保存する。保存失敗はログに記録するのみで、例外は上げない（ジョブ全体の成否に
+    影響させない）。"""
+    summary_path = Path(log_path).parent / LAST_RUN_SUMMARY_FILENAME
+    try:
+        save_atomic(summary_path, message.encode("utf-8"))
+    except OSError as e:
+        logger.error(f"直近実行サマリの保存に失敗しました: {e}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     default_days = int(os.environ.get("DAYS_WINDOW", DEFAULT_DAYS_WINDOW))
@@ -445,6 +461,7 @@ def main() -> None:
 
     message = build_slack_message(stats, free_bytes)
     logger.info("summary: " + message.replace("\n", " / "))
+    save_last_run_summary(log_path, message, logger)
 
     if slack_webhook_url:
         send_slack_notification(slack_webhook_url, message, logger)

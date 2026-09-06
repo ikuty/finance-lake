@@ -64,6 +64,20 @@ jobs:
             ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }}:/tmp/jpx-backfill-report.html \
             backfill_report.html
 
+          # 直近の日次実行（サービス本体のsend_slack_notification）が出したサマリも
+          # 併せて通知したい、との要望（2026-09-06）。ログファイルの"summary:"行は
+          # 改行を" / "に置換して1行に潰しており、メッセージ本文自体にも" / "が
+          # 含まれるため後から元の複数行構造を復元できない（実機検証で確認）。
+          # そのためサービス本体側に、改行を保持したまま保存する専用ファイル
+          # （last_run_summary.txt、save_last_run_summary()参照）を追加し、
+          # ここではそれをそのまま読む。ファイルが無い場合は空文字列のままにする
+          # （Notify Slackステップ側で空なら省略する）。
+          LAST_RUN_SUMMARY=$(ssh $SSH_OPTS ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }} \
+            "cat /home/${{ secrets.MAC_MINI_USER }}/finance-lake/data/jpx-daily-pdf-dl/logs/last_run_summary.txt 2>/dev/null" || true)
+          echo "last_run_summary<<SUMMARYEOF" >> "$GITHUB_OUTPUT"
+          echo "$LAST_RUN_SUMMARY" >> "$GITHUB_OUTPUT"
+          echo "SUMMARYEOF" >> "$GITHUB_OUTPUT"
+
       - name: Upload backfill report as GitHub Actions artifact
         id: upload_report
         uses: actions/upload-artifact@v4
@@ -82,6 +96,13 @@ jobs:
           TEXT="📊 jpx-daily-pdf-dl バックフィル進捗レポート
           ${{ steps.generate_report.outputs.summary }}
           ${{ steps.upload_report.outputs.artifact-url }}"
+
+          # 直近の日次実行サマリも併せて表示する（2026-09-06追加）。
+          LAST_RUN_SUMMARY="${{ steps.generate_report.outputs.last_run_summary }}"
+          if [ -n "$LAST_RUN_SUMMARY" ]; then
+            TEXT="$TEXT"$'\n\n'"$LAST_RUN_SUMMARY"
+          fi
+
           # unfurl_links/unfurl_mediaを無効化する。有効のままだとURLの大きな
           # プレビューカードが表示され、テキスト部分が視覚的に埋もれてしまうため
           # （2026-09-06修正、実機で確認）。

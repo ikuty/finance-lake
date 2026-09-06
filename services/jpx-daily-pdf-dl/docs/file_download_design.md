@@ -244,6 +244,21 @@ edinet-dlの「429発生回数」は本サービスでは「リトライ発生�
 ＝共有unit`finance-lake-shutdown.service`が実行される前）。edinet-dlと同じくPythonアプリ
 内で完結させる。
 
+### 直近実行サマリの保存（`last_run_summary.txt`、2026-09-06追加）
+
+Slackへ送信するメッセージ全文（改行保持）を、ログファイルと同じディレクトリに
+`last_run_summary.txt`として上書き保存する（`save_atomic`を流用）。デプロイワーク
+フローが、バックフィル進捗レポートの通知に併せてこの内容を転記するために追加した
+（後述「CI（デプロイワークフロー）での自動生成」参照）。
+
+既存のログ出力（`logger.info("summary: " + message.replace("\n", " / "))`）を再利用
+しなかった理由: ログは改行を`" / "`に置換して1行に潰しているが、メッセージ本文
+自体にも`" / "`が含まれる（例:「処理1件 / 成功1件」）ため、後から元の複数行構造を
+一意に復元できない（実際にデプロイワークフロー側で復元を試みて、行が誤って分割
+される不具合を実機で確認した）。ログ出力自体は人間が目視でログファイルを読む用途
+としては十分なため変更せず、機械的に再利用する側のために別ファイルを用意する
+という切り分けにした。
+
 ## バックフィル進捗レポート（2026-09-06導入）
 
 形式A（1981-2019年）・形式B確定済み過去年分（2020年〜前月）のバックフィルは一回限りの
@@ -300,11 +315,15 @@ GitHub ActionsのArtifactとしてアップロードする。DBファイル自�
   （生成されたHTMLを持ち帰る）はこのactionではできないため、Ubuntuランナー標準搭載の
   素の`ssh`/`scp`を使う（新規の依存を増やさない）。
 - `actions/upload-artifact`でアップロードする（既定の保持期間のまま、追加設定なし）。
-- **Slack通知**（2026-09-06追加）: レポート生成のサマリ行と、アップロードした
-  Artifactへのリンク（`actions/upload-artifact`の`artifact-url`出力）をSlackへ通知
-  する。GitHub Actions側に新規Secret`SLACK_WEBHOOK_URL`の登録が必要（Mac Mini上の
-  `.env`とは別の場所。値は使い回してよい）。未設定でも通知がスキップされるだけで
-  デプロイ自体は失敗しない（サービス本体の`send_slack_notification`と同じ設計）。
+- **Slack通知**（2026-09-06追加）: レポート生成のサマリ行、アップロードした
+  Artifactへのリンク（`actions/upload-artifact`の`artifact-url`出力）、直近の
+  日次実行サマリ（Mac Mini上の`last_run_summary.txt`をそのままSSH経由で読む）を
+  1通にまとめてSlackへ通知する。GitHub Actions側に新規Secret`SLACK_WEBHOOK_URL`の
+  登録が必要（Mac Mini上の`.env`とは別の場所。値は使い回してよい）。未設定でも
+  通知がスキップされるだけでデプロイ自体は失敗しない（サービス本体の
+  `send_slack_notification`と同じ設計）。ペイロードには`unfurl_links: false`・
+  `unfurl_media: false`を指定する（有効のままだとArtifact URLの大きなプレビュー
+  カードが表示され、テキスト部分が視覚的に埋もれてしまうことを実機で確認した）。
   Artifactのダウンロードには閲覧側もGitHubへのログインが必要（公開リポジトリでも
   匿名ダウンロードはGitHub側の制限で不可）。個人利用のため実害は無い。
 - **実行タイミングについての留保**: デプロイは手動トリガー（`workflow_dispatch`）で

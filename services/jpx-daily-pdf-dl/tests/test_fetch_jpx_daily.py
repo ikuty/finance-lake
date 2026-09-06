@@ -510,3 +510,26 @@ def test_send_slack_notification_failure_does_not_raise() -> None:
     with patch("fetch_jpx_daily.urllib.request.urlopen", side_effect=OSError("network down")):
         fjd.send_slack_notification("https://hooks.slack.com/x", "hello", TEST_LOGGER)
     # 例外が上がらなければOK
+
+
+# --- save_last_run_summary -----------------------------------------------------------
+
+
+def test_save_last_run_summary_preserves_newlines(tmp_path: Path) -> None:
+    log_path = str(tmp_path / "jpx-daily-pdf-dl.log")
+    message = "✅ jpx-daily-pdf-dl 日次実行 成功\n詳細日次: 処理1件 / 成功1件\nダウンロード: 9件 / 57.1MB"
+
+    fjd.save_last_run_summary(log_path, message, TEST_LOGGER)
+
+    summary_path = tmp_path / fjd.LAST_RUN_SUMMARY_FILENAME
+    # ログの"summary:"行と違い、" / "を含む行内の区切りと改行が区別できる形で残る
+    assert summary_path.read_text(encoding="utf-8") == message
+    assert summary_path.read_text(encoding="utf-8").count("\n") == 2
+
+
+def test_save_last_run_summary_does_not_raise_on_write_failure(tmp_path: Path) -> None:
+    # ログのディレクトリ自体が存在せず、かつ作成もできない状況を模して失敗させる
+    log_path = str(tmp_path / "no_such_dir" / "jpx-daily-pdf-dl.log")
+    with patch("fetch_jpx_daily.save_atomic", side_effect=OSError("disk full")):
+        fjd.save_last_run_summary(log_path, "hello", TEST_LOGGER)
+    # 例外が上がらなければOK
