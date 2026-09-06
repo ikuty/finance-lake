@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import sqlite3
 import sys
 from pathlib import Path
@@ -73,12 +74,28 @@ def test_load_done_year_months_ignores_other_formats(tmp_path: Path) -> None:
     assert br.load_done_year_months(db_path) == {(2025, 8)}
 
 
+# --- subtract_months / default_confirmed_cutoff ------------------------------------
+
+
+def test_subtract_months_within_same_year() -> None:
+    assert br.subtract_months(2026, 9, 3) == (2026, 6)
+
+
+def test_subtract_months_crosses_year_boundary() -> None:
+    assert br.subtract_months(2026, 9, 14) == (2025, 7)
+
+
+def test_default_confirmed_cutoff_uses_default_lag_months() -> None:
+    today = datetime.date(2026, 9, 6)
+    assert br.default_confirmed_cutoff(today) == br.subtract_months(2026, 9, br.DEFAULT_LAG_MONTHS)
+
+
 # --- render_html -------------------------------------------------------------------
 
 
 def test_render_html_marks_done_and_blank_cells() -> None:
     year_months = [(1981, 1), (1981, 2)]
-    html = br.render_html(year_months, done={(1981, 1)})
+    html = br.render_html(year_months, done={(1981, 1)}, display_through_year=1981)
     assert '<td class="done">*</td>' in html
     assert html.count("<td></td>") == 1  # 1981-02は未実施の空欄セル
 
@@ -86,11 +103,26 @@ def test_render_html_marks_done_and_blank_cells() -> None:
 def test_render_html_marks_out_of_scope_cells_as_na() -> None:
     # 1981年は1月・2月のみ対象（3月以降は対象範囲外）というケース
     year_months = [(1981, 1), (1981, 2)]
-    html = br.render_html(year_months, done=set())
+    html = br.render_html(year_months, done=set(), display_through_year=1981)
     assert html.count('<td class="na"></td>') == 10  # 3月〜12月の10ヶ月分
 
 
+def test_render_html_shows_fully_out_of_scope_years_as_all_na_rows() -> None:
+    # 直近ラグ期間により2026年が丸ごと対象範囲外(year_monthsに一切登場しない)場合でも、
+    # display_through_yearまでの行は表示され、全マスnaになる
+    year_months = [(1981, 1)]
+    html = br.render_html(year_months, done=set(), display_through_year=2026)
+    assert "<th>2026</th>" in html
+    assert "<th>1981</th>" in html
+
+
+def test_render_html_orders_years_descending() -> None:
+    year_months = [(1981, 1), (1982, 1)]
+    html = br.render_html(year_months, done=set(), display_through_year=1982)
+    assert html.index("<th>1982</th>") < html.index("<th>1981</th>")
+
+
 def test_render_html_includes_summary_script_and_legend() -> None:
-    html = br.render_html([(1981, 1)], done={(1981, 1)})
+    html = br.render_html([(1981, 1)], done={(1981, 1)}, display_through_year=1981)
     assert "id=\"summary\"" in html
     assert "バックフィル済み" in html

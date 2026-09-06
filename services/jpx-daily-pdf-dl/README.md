@@ -75,6 +75,15 @@ python3 scripts/backfill_report.py --db-path /home/ikuty/finance-lake/data/jpx-d
 
 生成された`backfill_report.html`をブラウザで開いて確認する。
 
+直近の一定期間（既定14ヶ月）は「対象範囲外」の網掛けにする。形式Cのローリング
+ウィンドウ・形式Bの確定移行待ちとして常設サービスが担当する期間であり、一回限りの
+バックフィルの対象ではないため。正確な確定境界が分かっている場合は`--end-year-month`
+で上書きできる。
+
+```
+python3 scripts/backfill_report.py --db-path ... --end-year-month 2025-01
+```
+
 ## テスト・型チェック
 
 ```
