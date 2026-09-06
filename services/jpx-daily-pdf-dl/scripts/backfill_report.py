@@ -87,7 +87,8 @@ def load_done_year_months(db_path: Path) -> set[tuple[int, int]]:
 
 def render_html(year_months: list[tuple[int, int]], done: set[tuple[int, int]]) -> str:
     in_scope = set(year_months)
-    years = sorted({y for y, _ in year_months})
+    # 新しい年ほど上に来るよう降順（直近の進捗を確認する頻度の方が高いため）
+    years = sorted({y for y, _ in year_months}, reverse=True)
 
     row_lines = []
     for year in years:
@@ -99,8 +100,8 @@ def render_html(year_months: list[tuple[int, int]], done: set[tuple[int, int]]) 
                 cells.append('<td class="done">*</td>')
             else:
                 cells.append("<td></td>")
-        # 形式境界（A→B）を罫線で視覚的に示す
-        row_class = ' class="boundary"' if year == FORMAT_BOUNDARY_YEAR else ""
+        # 形式境界（B→A、降順なので2020年の次に来る2019年の上に線を引く）を罫線で示す
+        row_class = ' class="boundary"' if year == FORMAT_BOUNDARY_YEAR - 1 else ""
         row_lines.append(f"<tr{row_class}><th>{year}</th>{''.join(cells)}</tr>")
 
     header = "<tr><th></th>" + "".join(f"<th>{m:02d}</th>" for m in range(1, 13)) + "</tr>"
