@@ -34,5 +34,33 @@ jobs:
             docker pull ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest
             docker tag ghcr.io/${{ github.repository_owner }}/jpx-daily-pdf-dl:latest jpx-daily-pdf-dl:latest
 
+      # バックフィル進捗レポート（scripts/backfill_report.py）はMac Mini上のSQLite DBを
+      # 読む必要があるため、GitHub Actions側にDBを転送するのではなく、Mac Mini上で
+      # レポート（HTML）を生成してから、そのHTMLだけを持ち帰る（2026-09-06導入）。
+      # appleboy/ssh-actionはリモートでのコマンド実行のみでファイル転送は行わないため、
+      # 素のssh/scp（Ubuntuランナーに標準搭載）を使う。新規の依存は追加しない。
+      - name: Generate backfill report on Mac Mini and fetch it
+        run: |
+          mkdir -p ~/.ssh
+          cat > ~/.ssh/id_ed25519 << 'KEYEOF'
+          ${{ secrets.SSH_PRIVATE_KEY }}
+          KEYEOF
+          chmod 600 ~/.ssh/id_ed25519
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519"
+          ssh $SSH_OPTS ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }} \
+            "cd /home/${{ secrets.MAC_MINI_USER }}/finance-lake/services/jpx-daily-pdf-dl && \
+             python3 scripts/backfill_report.py \
+               --db-path /home/${{ secrets.MAC_MINI_USER }}/finance-lake/data/jpx-daily-pdf-dl/index.db \
+               --output /tmp/jpx-backfill-report.html"
+          scp $SSH_OPTS \
+            ${{ secrets.MAC_MINI_USER }}@${{ secrets.MAC_MINI_HOST }}:/tmp/jpx-backfill-report.html \
+            backfill_report.html
+
+      - name: Upload backfill report as GitHub Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jpx-backfill-report
+          path: backfill_report.html
+
 # docker run --rm 方式（コンテナ内にデーモンを置かない）のため、pull後の再起動や
 # サービス再読み込みは不要。次回のsystemdタイマー実行から新しいイメージが使われる。

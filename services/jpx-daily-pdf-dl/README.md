@@ -83,6 +83,11 @@ python3 scripts/backfill_report.py --db-path /home/ikuty/finance-lake/data/jpx-d
 網掛け部分（常設サービス担当分）が実際にどこまで取得できているかは、月次の表とは
 別に、ページ上部の日次の表（形式C、年月×日）で確認できる。
 
+`jpx-daily-pdf-dl-deploy.yml`（GitHub Actions、手動トリガー）を実行すると、Mac Mini上で
+このレポートを生成し、GitHub ActionsのArtifactとしてアップロードする（DBファイル自体は
+転送しない）。ワークフロー実行後、GitHubの当該Actionsランのページから
+`jpx-backfill-report`という名前のArtifactをダウンロードできる。
+
 ```
 python3 scripts/backfill_report.py --db-path ... --end-year-month 2025-01
 ```
