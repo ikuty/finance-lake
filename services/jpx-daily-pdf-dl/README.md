@@ -43,8 +43,9 @@ sudo systemctl enable --now jpx-daily-pdf-dl.timer
 シャットダウンしない。シャットダウンは全サービス共通の共有unit
 （`finance-lake-shutdown.service`、リポジトリ直下の`systemd/`配下）が一手に引き受ける。
 
-`--days`は指定しない。`.env`の`DAYS_WINDOW`（既定3日）で、形式C（詳細日次）の遡り窓の
-日数を制御する。
+`--days`は指定しない。`.env`の`DAYS_WINDOW`（既定5日、2026-09-08に3日から変更。
+JPX側の掲載遅延が3日を超え、対象日が窓からこぼれ落ちる実機不具合が発生したため）
+で、形式C（詳細日次）の遡り窓の日数を制御する。
 
 ```
 docker run --rm --env-file .env -v "$(pwd)/data:/data" jpx-daily-pdf-dl:latest

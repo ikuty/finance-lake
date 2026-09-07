@@ -24,14 +24,16 @@
 されるため、「今日」を対象に含めても常に空振りになる）。
 
 Usage:
-    python3 fetch_jpx_daily.py                # DAYS_WINDOW日分（既定3日）を対象に実行
+    python3 fetch_jpx_daily.py                # DAYS_WINDOW日分（既定5日）を対象に実行
     python3 fetch_jpx_daily.py --days 7
 
 設定は環境変数から読む(Dockerの --env-file を想定):
     DB_PATH              省略時 /data/index.db
     DATA_DIR             省略時 /data/raw
     LOG_PATH             省略時 /data/logs/jpx-daily-pdf-dl.log
-    DAYS_WINDOW          省略時 3。--days未指定時に対象とする、前日から遡る日数
+    DAYS_WINDOW          省略時 5。--days未指定時に対象とする、前日から遡る日数
+                         （2026-09-08: 3日→5日に変更。JPX側の掲載遅延が3日を超え、
+                         2026-09-04分が窓からこぼれ落ちる実機不具合が発生したため）
     SLACK_WEBHOOK_URL    省略可。設定時のみ実行結果をSlackへ通知する（edinet-dlと同じ設計）
     S3_BUCKET_NAME       省略可。設定時のみバックフィル進捗レポートをS3へアップロード
                          し、公開URLをSlack通知に含める（2026-09-06追加。詳細は
@@ -68,7 +70,7 @@ JST = datetime.timezone(datetime.timedelta(hours=9))
 DEFAULT_DB_PATH = "/data/index.db"
 DEFAULT_DATA_DIR = "/data/raw"
 DEFAULT_LOG_PATH = "/data/logs/jpx-daily-pdf-dl.log"
-DEFAULT_DAYS_WINDOW = 3
+DEFAULT_DAYS_WINDOW = 5
 # バックフィル進捗レポートのアップロード先（S3、任意）。バケットのリージョンは
 # AWS_DEFAULT_REGION（boto3が自動で読む）と一致させる。静的サイトホスティングの
 # 公開URL形式はリージョンによって異なりうるため、実際にデプロイしたバケットで
