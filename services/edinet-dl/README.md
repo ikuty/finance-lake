@@ -54,6 +54,20 @@ sudo systemctl enable --now edinet-dl.timer
 docker run --rm --env-file .env -v "$(pwd)/data:/data" edinet-dl:latest --csv --pdf
 ```
 
+`.env`に`SLACK_WEBHOOK_URL`を設定すると、実行結果を1回の実行につき1通Slackへ通知する。
+未設定なら通知はスキップされる。
+
+`.env`に`S3_BUCKET_NAME`（＋`AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY`・
+`AWS_DEFAULT_REGION`）を設定すると、Slack通知の直前にバックフィル進捗レポート
+（日付ごとの取得状況を年月×日の表で可視化したHTML）を生成しS3へアップロードし、
+公開URLをSlack通知に含める（`jpx-daily-pdf-dl`と同じ設計・同じバケット、詳細は
+[docs/file_download_design.md](./docs/file_download_design.md)参照）。未設定なら
+アップロード自体をスキップする。
+
+```
+python3 scripts/backfill_report.py --db-path ... --output backfill_report.html
+```
+
 ## テスト・型チェック
 
 ```

@@ -52,13 +52,19 @@ Usage:
     python3 fetch_documents.py --csv --pdf        # CSV・PDFのみ取得（XBRLは対象外）
 
 設定は環境変数から読む(Dockerの --env-file を想定):
-    EDINET_API_KEY    必須。EDINET APIキー
-    DB_PATH           省略時 /data/edinet_index.db
-    DATA_DIR          省略時 /data/raw。書類本体の保存先ルート
-    LOG_PATH          省略時 /data/logs/edinet-dl.log
-    REQUEST_DELAY     省略時 1.2 (秒)
-    DAYS_WINDOW       省略時 3。--days未指定時に日次実行で遡る日数
-    SLACK_WEBHOOK_URL 省略可。設定時のみ実行結果をSlackへ通知する
+    EDINET_API_KEY       必須。EDINET APIキー
+    DB_PATH              省略時 /data/edinet_index.db
+    DATA_DIR             省略時 /data/raw。書類本体の保存先ルート
+    LOG_PATH             省略時 /data/logs/edinet-dl.log
+    REQUEST_DELAY        省略時 1.2 (秒)
+    DAYS_WINDOW          省略時 3。--days未指定時に日次実行で遡る日数
+    SLACK_WEBHOOK_URL    省略可。設定時のみ実行結果をSlackへ通知する
+    S3_BUCKET_NAME       省略可。設定時のみバックフィル進捗レポートをS3へアップロード
+                         し、公開URLをSlack通知に含める（2026-09-08追加。詳細は
+                         docs/file_download_design.md「バックフィル進捗レポートの
+                         公開（S3）」参照）
+    AWS_ACCESS_KEY_ID・AWS_SECRET_ACCESS_KEY・AWS_DEFAULT_REGION
+                         boto3が自動で読む標準の環境変数名（本スクリプトは直接読まない）
 """
 from __future__ import annotations
 
@@ -82,12 +88,21 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
+import boto3
+
+import backfill_report
+
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 DEFAULT_DB_PATH = "/data/edinet_index.db"
 DEFAULT_DATA_DIR = "/data/raw"
 DEFAULT_LOG_PATH = "/data/logs/edinet-dl.log"
 DEFAULT_DELAY = 1.2
+# バックフィル進捗レポートのアップロード先（S3、任意）。バケットのリージョンは
+# AWS_DEFAULT_REGION（boto3が自動で読む）と一致させる。jpx-daily-pdf-dlと同じ
+# バケットを使うが、キーで名前空間を分ける（2026-09-08追加）。
+DEFAULT_S3_REGION = "ap-northeast-1"
+S3_REPORT_KEY = "edinet-dl/backfill_report.html"
 DEFAULT_DAYS_WINDOW = 3
 SUSPICIOUS_DROP_RATIO = 0.5  # 一覧APIの結果件数が旧記録の半分未満なら退避対象（2026-09-04導入）
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB
@@ -607,9 +622,12 @@ def build_slack_message(stats: RunStats, free_bytes: int) -> str:
 
 
 def send_slack_notification(webhook_url: str, message: str, logger: logging.Logger) -> None:
-    """Slackへの通知失敗はログに記録するのみで、例外は上げない（ジョブ全体の成否に影響させない）。"""
+    """Slackへの通知失敗はログに記録するのみで、例外は上げない（ジョブ全体の成否に影響
+    させない）。unfurl_links/unfurl_mediaを無効化する（有効のままだとメッセージに含まれる
+    URLの大きなプレビューカードが表示され、テキスト部分が視覚的に埋もれてしまうことを
+    jpx-daily-pdf-dlで実機確認済み、2026-09-08）。"""
     try:
-        payload = json.dumps({"text": message}).encode("utf-8")
+        payload = json.dumps({"text": message, "unfurl_links": False, "unfurl_media": False}).encode("utf-8")
         req = urllib.request.Request(
             webhook_url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
         )
@@ -617,6 +635,30 @@ def send_slack_notification(webhook_url: str, message: str, logger: logging.Logg
             resp.read()
     except Exception as e:
         logger.error(f"Slack通知の送信に失敗しました: {e}")
+
+
+def upload_report_to_s3(db_path: Path, logger: logging.Logger) -> str | None:
+    """バックフィル進捗レポート（backfill_report.py）を生成し、S3へアップロードする。
+    アップロードしたオブジェクトの公開URL（静的サイトホスティング経由）を返す。
+    `S3_BUCKET_NAME`が未設定、またはアップロードに失敗した場合はNoneを返す。
+    失敗はログに記録するのみで、例外は上げない（ジョブ全体の成否に影響させない、
+    Slack通知と同じ設計。jpx-daily-pdf-dlと同じ実装、2026-09-08追加）。"""
+    bucket = os.environ.get("S3_BUCKET_NAME")
+    if not bucket:
+        return None
+
+    region = os.environ.get("AWS_DEFAULT_REGION", DEFAULT_S3_REGION)
+    try:
+        html, _summary = backfill_report.generate_report_html(db_path)
+        s3 = boto3.client("s3")
+        s3.put_object(
+            Bucket=bucket, Key=S3_REPORT_KEY,
+            Body=html.encode("utf-8"), ContentType="text/html; charset=utf-8",
+        )
+        return f"http://{bucket}.s3-website-{region}.amazonaws.com/{S3_REPORT_KEY}"
+    except Exception as e:
+        logger.error(f"バックフィルレポートのS3アップロードに失敗しました: {e}")
+        return None
 
 
 def compute_enabled_types(xbrl: bool, pdf: bool, csv: bool) -> set[int]:
@@ -687,6 +729,11 @@ def main() -> None:
 
     message = build_slack_message(stats, free_bytes)
     logger.info("summary: " + message.replace("\n", " / "))
+
+    report_url = upload_report_to_s3(db_path, logger)
+    if report_url:
+        message = message + "\n\n📊 バックフィル進捗レポート: " + report_url
+        logger.info(f"バックフィルレポートをアップロードしました: {report_url}")
 
     if slack_webhook_url:
         send_slack_notification(slack_webhook_url, message, logger)

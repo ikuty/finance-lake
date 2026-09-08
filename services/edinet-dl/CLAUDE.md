@@ -30,6 +30,8 @@ EDINET（金融庁の電子開示システム）から書類ファイルを取�
 - **取得対象形式**: `--xbrl`/`--pdf`/`--csv`で絞り込み可能。日次運用では当面`--csv --pdf`のみ（XBRLは対象外。理由は`docs/file_download_design.md`参照）。
 - **HTTP接続**: `EdinetHttpClient`でKeep-Alive接続を使い回す（2026-09-01導入、詳細は`docs/file_download_design.md`参照）。API呼び出しの並列化・`REQUEST_DELAY`のさらなる削減は、利用規約の「短時間の大量アクセス禁止」との整合性の観点から見送っている。
 - **「今日」の判定**: `today_jst()`でJST基準の日付を使う。コンテナのシステムTZ（UTC）で`datetime.date.today()`を使うと、`edinet-dl.timer`の発火時刻（JST 04:01:30＝UTC前日19:01:30）の関係でDAYS_WINDOWが1日ずれるバグがあった（2026-08-31修正）。
+- **バックフィル進捗レポート**（`scripts/backfill_report.py`、2026-09-08追加）: 日付ごとの取得状況（2016-08-13〜前日）を年月×日のコンパクトな表で可視化する。`jpx-daily-pdf-dl`と異なりedinet-dlは単一粒度（日次のみ、形式の切り分けが無い）のため表は1つで済む。日次実行のたびにSlack通知の直前で生成しS3（`ikuty-finance`バケット、キー`edinet-dl/backfill_report.html`）へアップロードし、公開URLをSlack通知に含める（設計・実装は`jpx-daily-pdf-dl`と同じ、詳細は`docs/file_download_design.md`「バックフィル進捗レポートの公開（S3）」参照）。
+- **実機不具合の記録（2026-09-08、修正済み）**: `/etc/systemd/system/edinet-dl.service`に、リポジトリの雛形ファイル由来の未置換プレースホルダ`<user>`が残ってしまい、2026-09-06・09-07の2日間`docker run`自体が起動直後に失敗し続けた（`--env-file`のパスが存在しないため）。原因は、2026-09-06の共有シャットダウンunit導入作業でこのunitファイルをリポジトリの雛形でそのまま上書きした際、実際のユーザー名`ikuty`への置換を忘れたこと。`sudo sed -i 's/<user>/ikuty/g'`で修正し、手動`docker run`で欠損2日分を回収した。教訓: 雛形ファイルを`/etc/systemd/system/`へコピーする際は、必ず`<user>`が実際の値に置換されているか確認すること。
 
 ## Mac Mini上のパス（実行基盤）
 
@@ -42,7 +44,7 @@ EDINET（金融庁の電子開示システム）から書類ファイルを取�
 ## 実装言語の選定理由
 
 Python 3.12（stdlib中心）を採用。本ジョブはEDINET APIへのI/Oバウンドな処理で、かつ意図的にリクエスト間隔を空けているため、省メモリ・高速実行の軸はほぼ効かないと判断。Go等への書き換えは、動作確認済みのコードを捨てて存在しない性能問題を解決することになり、over engineeringと判断して見送った。
-- 依存管理: 標準ライブラリのみ（依存ゼロ）で完結している。クラウドSDK（`boto3`等）は不要。
+- 依存管理: 標準ライブラリのみ（依存ゼロ）で完結している方針だったが、バックフィル進捗レポートのS3アップロードのため`boto3`（AWS公式SDK）を例外的に追加した（2026-09-08、`jpx-daily-pdf-dl`と同じ判断。AWS Signature V4の自前実装は複雑で保守コストが高いため）。
 
 ## 現状（2026-09-02時点）
 

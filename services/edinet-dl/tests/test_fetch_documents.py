@@ -749,4 +749,42 @@ def test_send_slack_notification_posts_json(monkeypatch: pytest.MonkeyPatch) -> 
         fetch_documents.send_slack_notification("https://hooks.slack.com/x", "hello", TEST_LOGGER)
 
     assert captured["url"] == "https://hooks.slack.com/x"
-    assert captured["data"] == {"text": "hello"}
+    assert captured["data"] == {"text": "hello", "unfurl_links": False, "unfurl_media": False}
+
+
+# --- upload_report_to_s3 --------------------------------------------------------------
+
+
+def test_upload_report_to_s3_returns_none_when_bucket_not_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("S3_BUCKET_NAME", raising=False)
+    assert fetch_documents.upload_report_to_s3(tmp_path / "edinet_index.db", TEST_LOGGER) is None
+
+
+def test_upload_report_to_s3_uploads_and_returns_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("S3_BUCKET_NAME", "ikuty-finance")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+    mock_client = MagicMock()
+    with patch("fetch_documents.boto3.client", return_value=mock_client) as mock_boto3_client:
+        url = fetch_documents.upload_report_to_s3(tmp_path / "edinet_index.db", TEST_LOGGER)
+
+    mock_boto3_client.assert_called_once_with("s3")
+    mock_client.put_object.assert_called_once()
+    call_kwargs = mock_client.put_object.call_args.kwargs
+    assert call_kwargs["Bucket"] == "ikuty-finance"
+    assert call_kwargs["Key"] == fetch_documents.S3_REPORT_KEY
+    assert b"<html" in call_kwargs["Body"]
+    assert call_kwargs["ContentType"] == "text/html; charset=utf-8"
+    assert url == f"http://ikuty-finance.s3-website-ap-northeast-1.amazonaws.com/{fetch_documents.S3_REPORT_KEY}"
+
+
+def test_upload_report_to_s3_returns_none_and_logs_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("S3_BUCKET_NAME", "ikuty-finance")
+    with patch("fetch_documents.boto3.client", side_effect=RuntimeError("boto3 error")):
+        url = fetch_documents.upload_report_to_s3(tmp_path / "edinet_index.db", TEST_LOGGER)
+    assert url is None

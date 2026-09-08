@@ -440,6 +440,32 @@ logger.addHandler(logging.StreamHandler(sys.stderr))  # 手動実行時にター
   カウントを追加するだけ）
 - **ダウンロードサイズ・件数**: 書類本体ダウンロード処理でファイルを保存する際に累積する
 
+## バックフィル進捗レポートの公開（S3、2026-09-08導入）
+
+`jpx-daily-pdf-dl`で先行実装した設計をそのまま踏襲する。日次実行のたびに、Slack通知の
+直前でバックフィル進捗レポート（`scripts/backfill_report.py`が生成するHTML）を生成し
+S3へアップロードし、公開URLをSlack通知に含める。
+
+- **`jpx-daily-pdf-dl`との違い**: edinet-dlは単一粒度（`fileDate`単位の`fetch_progress`
+  テーブル1つ、形式の切り分けが無い）のため、レポートは年月×日の表1つだけで済む
+  （`jpx-daily-pdf-dl`のような「バックフィル対象」と「常設サービス担当」の切り分けや、
+  確定アーカイブへの移行遅延といった概念がEDINETには存在しないため）。対象期間は
+  初回バックフィルの開始日（2016-08-13）〜前日。
+- **S3バケット**: `jpx-daily-pdf-dl`と同じ`ikuty-finance`（`ap-northeast-1`、静的サイト
+  ホスティング・全公開・7日ライフサイクルで自動削除）を共用する。アップロード先の
+  キーで名前空間を分ける（`edinet-dl/backfill_report.html`、`jpx-daily-pdf-dl/`と衝突
+  しない）。
+- **クラウドストレージ利用について**: リポジトリルートの`CLAUDE.md`に記載の
+  「クラウドストレージ（S3等）は使わない」という方針は、データレイク本体（書類本体等の
+  主要ストレージ）についての決定であり、本件（副次的な公開用レポート1ファイルのみ）に
+  限り例外として認める（`jpx-daily-pdf-dl`と同じ判断、2026-09-06決定を踏襲）。
+- **実装**: `boto3`（AWS公式SDK）を新規依存として追加した（本サービスはこれまで依存
+  ゼロ・stdlibのみだったが、AWS Signature V4の自前実装は複雑で保守コストが高いため
+  例外的に追加）。認証情報は`AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY`・
+  `AWS_DEFAULT_REGION`という標準環境変数名で`.env`に保存し、boto3が自動で読む。
+- **失敗時の扱い**: `S3_BUCKET_NAME`未設定ならアップロード自体をスキップする。失敗しても
+  例外を上げず、ログに記録するのみでジョブ全体を継続する（Slack通知と同じ設計）。
+
 ## 環境変数
 
 新規に`DATA_DIR`（デフォルト`/data/raw`）・`LOG_PATH`（デフォルト`/data/logs/edinet-dl.log`）・
