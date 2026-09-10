@@ -13,6 +13,10 @@
 # 実行中でなければ、待たずに即座にshutdownへ進む）。将来サービスが増えた場合は
 # After=の行にサービス名を追加するだけでよい。
 #
+# finance-dwh-transform.service は別リポジトリ（finance-dwh）が配置するサービス。
+# レイクの取得ジョブ完了後にDWHの変換ジョブが走るため、その完了も待ってからshutdown
+# する必要がある（詳細はfinance-dwh/docs/deployment_design.md）。
+#
 # 本unitのタイマー（finance-lake-shutdown.timer）は、各サービスのタイマーの発火時刻
 # より後に設定すること。これより早いと、まだ発火していないサービスのタイマーを
 # 「実行中でない」と誤認し、待たずに即シャットダウンしてしまう。
@@ -26,7 +30,7 @@
 
 [Unit]
 Description=Shut down the machine after all daily fetch jobs complete
-After=edinet-dl.service jpx-daily-pdf-dl.service
+After=edinet-dl.service jpx-daily-pdf-dl.service finance-dwh-transform.service
 
 [Service]
 Type=oneshot

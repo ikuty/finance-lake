@@ -2,10 +2,11 @@
 # /etc/systemd/system/finance-lake-shutdown.timer にコピーする
 # （finance-lake-shutdown.serviceと対で使う）。
 #
-# 04:02:00 JSTは、edinet-dl.timer（04:01:30 JST）・jpx-daily-pdf-dl.timer（04:01:00 JST）
-# のいずれよりも後の時刻。両タイマーが確実に発火し終えた後でなければ、まだ実行中でない
-# サービスを「待つ必要なし」と誤判定してしまうため。今後サービスのタイマーを追加する
-# 場合は、この時刻がそれらより後になっているか確認すること。
+# 04:02:00 JSTは、jpx-daily-pdf-dl.timer（04:01:00 JST）・edinet-dl.timer（04:01:30 JST）・
+# finance-dwh-transform.timer（04:01:45 JST、別リポジトリfinance-dwhが配置）のいずれよりも
+# 後の時刻。全タイマーが確実に発火し終えた後でなければ、まだ実行中でないサービスを
+# 「待つ必要なし」と誤判定してしまうため。今後サービスのタイマーを追加する場合は、
+# この時刻がそれらより後になっているか確認すること。
 #
 # マシンのシステムタイムゾーンはUTC（Etc/UTC）だが、Tapoの電源投入時刻はJSTで管理して
 # いるため、OnCalendarにも明示的にAsia/Tokyoを指定する。

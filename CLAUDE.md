@@ -60,6 +60,8 @@ finance-lake/
   各サービスのunitに`shutdown`を持たせると、「そのサービスが最後に終わる」という前提に
   依存する非対称な設計になり、サービスが増えるほど壊れやすくなるため。共有unitは
   `After=`で各サービスを列挙し、実行中なら待ってからシャットダウンする。
+  `After=`には**別リポジトリ`finance-dwh`が配置する`finance-dwh-transform.service`も
+  含む**（レイクの取得後にDWHの変換ジョブが走るため。2026-09-11追記）。
 - ネットワークは外部から遮断されたLANに配置し、Tailscaleを導入する。開発時・GitHub
   Actionsからのデプロイとも、Tailscale+SSHでの接続を前提とする。
 
@@ -87,7 +89,10 @@ Python 3.12（stdlib中心）を各サービスの既定言語とする。型ヒ
 - `services/jpx-daily-pdf-dl/`のバックフィル進捗レポートのSlack通知方法の見直し
   （現状: GitHub Actions Artifact経由。指摘: Mac Mini実行時にHTML添付でSlackへ
   直接送るべき。Slack Files API（Bot Token＋`files:write`）が必要、未着手）
-- ウェアハウス層・マート層・アプリの設計（別リポジトリ、将来着手）
+- ウェアハウス層は別リポジトリ`finance-dwh`で着手済み（2026-09-11時点、raw層のみ実装。
+  PostgreSQL + dbt Core + Prefect + `file_fdw`でレイクのファイルを外部テーブル化）。
+  cleansed/mart層・アプリの設計は今後。Mac Miniデプロイ時に共有シャットダウンunitの
+  `After=`へ`finance-dwh-transform.service`を追記する（unitファイルには反映済み）。
 - **前日終値の低遅延取得**（新規サービス、将来着手、2026-09-06決定）: `jpx-daily-pdf-dl`
   のPDF日報は実測で2営業日以上の遅延があり、「翌日に前日終値を取得する」用途には
   使えないと判明した。無料の代替手段（GOOGLEFINANCE・Stooq・証券会社ログイン・
