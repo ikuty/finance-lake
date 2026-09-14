@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import sys
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,6 +38,22 @@ def test_fetch_archive_links_stops_at_first_empty_page() -> None:
     }
     # page 3が空だったので、page 4・5へは進まない
     assert mock_get.call_count == 3
+
+
+def test_fetch_archive_links_stops_at_404() -> None:
+    err_404 = urllib.error.HTTPError("http://x", 404, "not found", None, None)  # type: ignore[arg-type]
+    pages = {1: ARCHIVE_PAGE_1.encode("utf-8")}
+
+    def fake_http_get(url: str, **kwargs: object) -> bytes:
+        if "00-archives-01.html" in url:
+            return pages[1]
+        raise err_404
+
+    with patch("backfill_detailed_daily_range._http_get", side_effect=fake_http_get) as mock_get:
+        links = bddr.fetch_archive_links(TEST_LOGGER, max_pages=5)
+
+    assert links == {"2026-06-03": "/markets/statistics-equities/daily/data/stq_20260603.pdf"}
+    assert mock_get.call_count == 2
 
 
 # --- backfill_range ---------------------------------------------------------------

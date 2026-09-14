@@ -32,6 +32,7 @@ import logging
 import os
 import sqlite3
 import sys
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -69,12 +70,20 @@ def setup_logger() -> logging.Logger:
 
 def fetch_archive_links(logger: logging.Logger, max_pages: int = MAX_ARCHIVE_PAGES) -> dict[str, str]:
     """00-archives-01.html〜NNページを順に取得し、日付(YYYY-MM-DD)→相対パスの
-    対応表を返す。リンクが1件も無いページに達した時点で、それより先は無いと
-    判断して打ち切る（実機確認: 13ページ目以降が空、2026-09-14）。"""
+    対応表を返す。リンクが1件も無いページ、または404に達した時点で、それより先は
+    無いと判断して打ち切る（実機確認、2026-09-14: curlでは13ページ目以降が
+    200かつリンク無しだったが、実行時は13ページ目が404を返すこともあった。
+    ページの存在確認自体がJPX側で揺れうるため、両方を「窓の終端」として扱う）。"""
     links: dict[str, str] = {}
     for page in range(1, max_pages + 1):
         url = f"https://{BASE_HOST}/markets/statistics-equities/daily/00-archives-{page:02d}.html"
-        html = _http_get(url).decode("utf-8", errors="ignore")
+        try:
+            html = _http_get(url).decode("utf-8", errors="ignore")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                logger.info(f"00-archives-{page:02d}.html: 404、ここで打ち切り")
+                break
+            raise
         page_links = parse_daily_links(html)
         if not page_links:
             logger.info(f"00-archives-{page:02d}.html: リンク無し、ここで打ち切り")
