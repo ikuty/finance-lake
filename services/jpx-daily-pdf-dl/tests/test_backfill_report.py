@@ -116,6 +116,15 @@ def test_render_monthly_table_shows_fully_out_of_scope_years_as_all_na_rows() ->
     assert "<th>1981</th>" in html
 
 
+def test_render_monthly_table_shows_done_even_when_out_of_scope() -> None:
+    # 常設サービスが対象範囲外とされた月を先に取得し終えているケース(2026-09-15、
+    # 実機でDEFAULT_LAG_MONTHSの目安がずれて発覚)。done優先で表示すべき。
+    year_months = [(1981, 1)]  # 1981-02はin_scope外
+    html = br.render_monthly_table(year_months, done={(1981, 2)}, display_through_year=1981)
+    assert '<td class="done">*</td>' in html
+    assert html.count('<td class="na"></td>') == 10  # 3月〜12月の10ヶ月分(2月はdone)
+
+
 def test_render_monthly_table_orders_years_descending() -> None:
     year_months = [(1981, 1), (1982, 1)]
     html = br.render_monthly_table(year_months, done=set(), display_through_year=1982)
@@ -209,3 +218,18 @@ def test_generate_report_html_respects_end_year_month_override(tmp_path: Path) -
 
     # --end-year-monthを指定すると対象範囲(分母)が変わるため、サマリ文字列も変わる
     assert summary_default != summary_override
+
+
+def test_generate_report_html_counts_done_months_beyond_default_cutoff(tmp_path: Path) -> None:
+    # DEFAULT_LAG_MONTHSの目安より後(=既定では対象範囲外)の月でも、常設サービスが
+    # 03.html経由で先に取得し終えていれば、doneとして集計・表示に含まれる
+    # (2026-09-15修正の回帰テスト)。
+    far_future = br.today_jst().replace(day=1)
+    year, month = far_future.year, far_future.month  # 当月はまず確実に対象範囲外
+    period = f"{year:04d}-{month:02d}"
+    db_path = _make_db(tmp_path, [(period, br.FORMAT_MONTHLY_OHLC, "done")])
+
+    html, summary = br.generate_report_html(db_path)
+
+    assert '<td class="done">*</td>' in html
+    assert "月次: 1/" in summary

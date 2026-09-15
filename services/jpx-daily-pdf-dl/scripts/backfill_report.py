@@ -181,10 +181,15 @@ def render_monthly_table(
     for year in years:
         cells = []
         for month in range(1, 13):
-            if (year, month) not in in_scope:
-                cells.append('<td class="na"></td>')
-            elif (year, month) in done:
+            # done判定を対象範囲(in_scope)より先に見る: 実際に取得済みであれば、
+            # ヒューリスティックな「対象範囲外」推定がどうであれ常にdone表示を
+            # 優先する(2026-09-15修正。DEFAULT_LAG_MONTHSは目安に過ぎず、常設
+            # サービスが03.html経由で対象範囲外とされた月を先に取得し終えている
+            # ことがあり、その場合に実際は取得済みの月がnaで隠れてしまっていた)。
+            if (year, month) in done:
                 cells.append('<td class="done">*</td>')
+            elif (year, month) not in in_scope:
+                cells.append('<td class="na"></td>')
             else:
                 cells.append("<td></td>")
         # 形式境界（B→A、降順なので2020年の次に来る2019年の上に線を引く）を罫線で示す
@@ -293,8 +298,12 @@ def generate_report_html(db_path: Path, end_year_month: str | None = None) -> tu
     else:
         end_year, end_month = default_confirmed_cutoff(today)
 
-    year_months = backfillable_year_months(end_year, end_month)
     monthly_done = load_done_year_months(db_path)
+    # ヒューリスティックな対象範囲(backfillable_year_months)と、実際にdoneな月の
+    # 和集合を「対象月」とする(2026-09-15修正)。常設サービスが対象範囲外とされた
+    # 月を03.html経由で先に取得し終えているケースがあり、その月をdone扱いのまま
+    # 集計・表示に含めるため(render_monthly_table側もdone優先に修正済み)。
+    year_months = sorted(set(backfillable_year_months(end_year, end_month)) | monthly_done)
     monthly_table = render_monthly_table(year_months, monthly_done, display_through_year=today.year)
 
     last_complete_day = last_complete_day_jst()
