@@ -34,6 +34,13 @@
 表と同じ粒度でしか意味を持たない）。日次の表の範囲は、月次バックフィルの対象範囲外
 となる年月の1日から、前日（`last_complete_day_jst()`）までとする。
 
+ただし、この開始日（DEFAULT_LAG_MONTHSベース）は形式Cの実際のローリング
+ウィンドウ（13ヶ月程度）よりかなり広い目安のため、そのまま使うと実際には
+永久に取得不可能な古い月（ウィンドウの外）が「空欄の並び」として表示され、
+未対応の作業が残っているかのように誤解を招く。`trim_leading_empty_months`で
+先頭のdoneが1件も無い月をまとめて切り落とし、この誤解を避ける（2026-09-15
+追加。実機で2025年1〜8月分の永久に空の行が表示され続けていたことから発覚）。
+
 Usage:
     python3 backfill_report.py [--db-path /data/index.db] [--output backfill_report.html]
                                 [--end-year-month YYYY-MM]
@@ -147,6 +154,28 @@ def daily_service_dates(start_year: int, start_month: int, end_date: datetime.da
         if month > 12:
             month = 1
             year += 1
+
+
+def trim_leading_empty_months(
+    dates_in_scope: list[datetime.date], done: set[datetime.date]
+) -> list[datetime.date]:
+    """dates_in_scopeの先頭から、doneな日が1件も無い月をまとめて切り落とす
+    (2026-09-15追加)。月次バックフィルの対象範囲外とみなす既定の20ヶ月ラグは
+    あくまで目安で、実際の形式Cローリングウィンドウ(13ヶ月程度)よりかなり広く
+    見積もっている。その結果、実際にはウィンドウの外で永久に取得不可能な
+    古い月まで日次表に「空欄の並び」として表示され、あたかも未対応の作業が
+    残っているかのように見えてしまっていた。先頭の全滅月を切ることで、
+    直近の実データが無い場合(初回実行直後等)を除き、この種の恒久的な空白を
+    表示しない。末尾(直近)側は切らない: 最新の未取得日は正当なバックフィル
+    対象として引き続き表示する。"""
+    first_done_month: tuple[int, int] | None = None
+    for d in dates_in_scope:
+        if d in done:
+            first_done_month = (d.year, d.month)
+            break
+    if first_done_month is None:
+        return []  # doneが1件も無いなら、全部が「恒久的に空欄」とみなし丸ごと切る
+    return [d for d in dates_in_scope if (d.year, d.month) >= first_done_month]
 
 
 def load_done_dates(db_path: Path, fmt: str) -> set[datetime.date]:
@@ -309,6 +338,11 @@ def generate_report_html(db_path: Path, end_year_month: str | None = None) -> tu
     last_complete_day = last_complete_day_jst()
     dates_in_scope = daily_service_dates(end_year, end_month, last_complete_day)
     daily_done = load_done_dates(db_path, FORMAT_DETAILED_DAILY)
+    # 先頭の「恒久的に空欄」な月(形式Cの実際のローリングウィンドウより古く、
+    # 二度と取得できない月)を切り落とす(2026-09-15追加)。既定の対象範囲外
+    # ラグ(20ヶ月)は形式Cの実ウィンドウ(13ヶ月程度)よりかなり広い目安のため、
+    # そのまま使うと本来表示不要な空欄の並びが生じていた。
+    dates_in_scope = trim_leading_empty_months(dates_in_scope, daily_done)
     daily_table = render_daily_table(dates_in_scope, daily_done)
 
     html = render_page(daily_table, monthly_table)

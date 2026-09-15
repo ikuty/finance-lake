@@ -131,6 +131,48 @@ def test_render_monthly_table_orders_years_descending() -> None:
     assert html.index("<th>1982</th>") < html.index("<th>1981</th>")
 
 
+# --- trim_leading_empty_months ------------------------------------------------------
+
+
+def test_trim_leading_empty_months_drops_permanently_empty_leading_months() -> None:
+    dates = [
+        datetime.date(2025, 1, 1), datetime.date(2025, 1, 2),  # 恒久的に空(ウィンドウ外)
+        datetime.date(2025, 9, 1), datetime.date(2025, 9, 2),  # ここから実データがある
+    ]
+    done = {datetime.date(2025, 9, 1)}
+    got = br.trim_leading_empty_months(dates, done)
+    assert got == [datetime.date(2025, 9, 1), datetime.date(2025, 9, 2)]
+
+
+def test_trim_leading_empty_months_keeps_later_gaps_within_first_done_month() -> None:
+    # 最初にdoneが現れた月自体は、その月の前半にdoneが無い日があっても丸ごと残す
+    dates = [datetime.date(2025, 9, 1), datetime.date(2025, 9, 2), datetime.date(2025, 9, 3)]
+    done = {datetime.date(2025, 9, 3)}
+    got = br.trim_leading_empty_months(dates, done)
+    assert got == dates
+
+
+def test_trim_leading_empty_months_keeps_later_genuine_gaps() -> None:
+    # 直近側(末尾)の未取得日は、恒久的な空白ではなく正当なバックフィル対象なので残す
+    dates = [
+        datetime.date(2025, 9, 1),
+        datetime.date(2025, 10, 1),  # 未取得だが直近なので残る
+    ]
+    done = {datetime.date(2025, 9, 1)}
+    got = br.trim_leading_empty_months(dates, done)
+    assert got == dates
+
+
+def test_trim_leading_empty_months_returns_empty_when_nothing_done() -> None:
+    dates = [datetime.date(2025, 1, 1), datetime.date(2025, 1, 2)]
+    got = br.trim_leading_empty_months(dates, done=set())
+    assert got == []
+
+
+def test_trim_leading_empty_months_handles_empty_input() -> None:
+    assert br.trim_leading_empty_months([], done=set()) == []
+
+
 # --- daily_service_dates / load_done_dates ------------------------------------------
 
 
