@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import sys
 import time
-import urllib.error
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -17,19 +17,28 @@ import fetch_corporate_actions as fca  # noqa: E402
 TEST_LOGGER = logging.getLogger("test-mufg-corporate-actions")
 
 
-def _mock_urlopen_sequence(*responses: Any) -> Any:
-    def fake_urlopen(*args: object, **kwargs: object) -> MagicMock:
-        item = responses[fake_urlopen.calls]  # type: ignore[attr-defined]
-        fake_urlopen.calls += 1  # type: ignore[attr-defined]
+class FakePage:
+    """Playwright Page の goto/content だけを持つテストダブル。
+
+    responsesに文字列を渡すとその内容をcontent()が返す。Exceptionを渡すと
+    gotoでそれをraiseする（PlaywrightErrorのリトライ挙動を検証するため）。
+    """
+
+    def __init__(self, *responses: Any) -> None:
+        self._responses = list(responses)
+        self._html: str | None = None
+        self.goto_calls = 0
+
+    def goto(self, url: str, timeout: int | None = None) -> None:
+        self.goto_calls += 1
+        item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = item
-        mock_resp.__enter__.return_value = mock_resp
-        return mock_resp
+        self._html = item
 
-    fake_urlopen.calls = 0  # type: ignore[attr-defined]
-    return fake_urlopen
+    def content(self) -> str:
+        assert self._html is not None
+        return self._html
 
 
 # --- パス構築 ------------------------------------------------------------------
@@ -70,27 +79,27 @@ def test_already_done_false_when_status_is_error(tmp_path: Path) -> None:
 
 def test_fetch_one_downloads_and_records_done(tmp_path: Path) -> None:
     conn = fca.init_db(tmp_path / "index.db")
-    html = b"<html><body>dummy</body></html>"
+    html = "<html><body>dummy</body></html>"
+    page = FakePage(html)
 
-    with patch("fetch_corporate_actions.urllib.request.urlopen", side_effect=_mock_urlopen_sequence(html)):
-        ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=False)
+    ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=False, page=page)  # type: ignore[arg-type]
 
     assert ok is True
-    assert n_bytes == len(html)
+    assert n_bytes == len(html.encode("utf-8"))
     assert fca.already_done(conn, "2026-09-14", "bunkatu")
     saved = fca.page_path(tmp_path, "2026-09-14", "bunkatu")
-    assert saved.read_bytes() == html
+    assert saved.read_text(encoding="utf-8") == html
     assert not saved.with_suffix(".html.tmp").exists()
 
 
 def test_fetch_one_skips_when_already_done(tmp_path: Path) -> None:
     conn = fca.init_db(tmp_path / "index.db")
     fca.store_progress(conn, "2026-09-14", "bunkatu", "done", "https://kabu.com/x", None)
+    page = FakePage()
 
-    with patch("fetch_corporate_actions.urllib.request.urlopen") as mock_urlopen:
-        ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=False)
+    ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=False, page=page)  # type: ignore[arg-type]
 
-    mock_urlopen.assert_not_called()
+    assert page.goto_calls == 0
     assert ok is True
     assert n_bytes == 0
 
@@ -98,22 +107,23 @@ def test_fetch_one_skips_when_already_done(tmp_path: Path) -> None:
 def test_fetch_one_force_revisits_done(tmp_path: Path) -> None:
     conn = fca.init_db(tmp_path / "index.db")
     fca.store_progress(conn, "2026-09-14", "bunkatu", "done", "https://kabu.com/x", None)
-    html = b"<html>new content</html>"
+    html = "<html>new content</html>"
+    page = FakePage(html)
 
-    with patch("fetch_corporate_actions.urllib.request.urlopen", side_effect=_mock_urlopen_sequence(html)) as m:
-        ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=True)
+    ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=True, page=page)  # type: ignore[arg-type]
 
-    m.assert_called_once()
+    assert page.goto_calls == 1
     assert ok is True
     saved = fca.page_path(tmp_path, "2026-09-14", "bunkatu")
-    assert saved.read_bytes() == html
+    assert saved.read_text(encoding="utf-8") == html
 
 
 def test_fetch_one_marks_error_on_failure(tmp_path: Path) -> None:
     conn = fca.init_db(tmp_path / "index.db")
+    page = FakePage(*[PlaywrightError("boom")] * 6)  # 初回+リトライ5回、すべて失敗
 
-    with patch("fetch_corporate_actions.urllib.request.urlopen", side_effect=RuntimeError("boom")):
-        ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=False)
+    with patch("fetch_corporate_actions.time.sleep"):
+        ok, n_bytes = fca.fetch_one(conn, tmp_path, "2026-09-14", "bunkatu", TEST_LOGGER, force=False, page=page)  # type: ignore[arg-type]
 
     assert ok is False
     assert n_bytes == 0
@@ -144,22 +154,21 @@ def test_build_slack_message_with_failure() -> None:
     assert "株式併合: NG" in msg
 
 
-# --- _http_get -------------------------------------------------------------------
+# --- _render_html -------------------------------------------------------------------
 
 
-def test_http_get_retries_on_429_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    err_429 = urllib.error.HTTPError("http://x", 429, "rate limited", None, None)  # type: ignore[arg-type]
+def test_render_html_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch(
-        "fetch_corporate_actions.urllib.request.urlopen", side_effect=_mock_urlopen_sequence(err_429, b"ok")
-    ):
-        assert fca._http_get("http://example/") == b"ok"
+    page = FakePage(PlaywrightError("transient"), "<html>ok</html>")
+
+    assert fca._render_html(page, "http://example/") == "<html>ok</html>"  # type: ignore[arg-type]
+    assert page.goto_calls == 2
 
 
-def test_http_get_raises_immediately_on_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    err_404 = urllib.error.HTTPError("http://x", 404, "not found", None, None)  # type: ignore[arg-type]
+def test_render_html_raises_after_exhausting_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    with patch("fetch_corporate_actions.urllib.request.urlopen", side_effect=err_404):
-        with pytest.raises(urllib.error.HTTPError) as exc_info:
-            fca._http_get("http://example/")
-    assert exc_info.value.code == 404
+    page = FakePage(*[PlaywrightError("boom")] * 6)  # 初回+リトライ5回、すべて失敗
+
+    with pytest.raises(RuntimeError, match="リトライ上限"):
+        fca._render_html(page, "http://example/", max_retries=5)  # type: ignore[arg-type]
+    assert page.goto_calls == 6

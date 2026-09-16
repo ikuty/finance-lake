@@ -56,8 +56,32 @@ JPXの「個人利用は可」のような明示的な救済規定はこの文�
   実行順序はedinet-dl・jpx-daily-pdf-dlの後、finance-dwh-transformの前。
 - 3ページの列構成はそれぞれ異なる（分割: 7列、併合: 5列、商号変更: 4列）が、
   レイク層はパースせず生HTMLのまま保存する（パース・型付けはDWH層の責務）。
-- 標準ライブラリのみで完結（urllib.request・sqlite3・json）。S3アップロードを行わない
-  ためboto3は不要（edinet-dl・jpx-daily-pdf-dlとの違い）。
+
+### Playwright/Chromiumによるレンダリング取得（重要、2026-09-16決定）
+
+対象3ページは、実データを`<script src="/process/{name}.js">`が指す別ファイル内で
+`document.write()`により描画している。単純な`urllib.request`によるHTTP GETでは
+`<div id="main">`とscriptタグしか無い空のシェルHTMLしか取得できないことを実機で
+発見した（当初これに気づかず、実データの無いHTMLを保存してしまっていた）。
+
+この`.js`ファイル自体は外部への追加問い合わせが無い自己完結ファイル（実データが
+文字列リテラル・変数として埋め込まれている、grep確認済み: `fetch`/`XMLHttpRequest`/
+`.ajax(`/`axios.`は一切出現しない）ため、`.js`を直接取得して解析する案も検討したが、
+比率列は`document.write(RatioWhite)`のように別変数（`BRatioW`/`ARatioW`）の計算結果を
+書き出す形になっており、`document.write()`呼び出しの内部実装に直接依存したパーサーに
+なってしまう。kabu.com側の描画ロジックが変わるたびにDWH側のパーサーが壊れるリスクを
+避けるため、**Playwrightでheadless Chromiumにより実際にレンダリングし、最終的な
+完成後HTML（`<table>`が実データで埋まった状態）を保存する**方針とした。DWH側の
+パーサー（BeautifulSoup）は標準的な`<table>`構造にのみ依存すればよくなる。
+
+このリポジトリで初めてPlaywright/Chromiumを導入する（他サービスは標準ライブラリの
+みで完結する方針だったが、正当化される例外として追加）。今後もJavaScript描画に
+依存するサイトからの取得が発生する見込みのため、汎用的な基盤として位置づける。
+Dockerfileは`python:3.12-slim`ではなくPlaywright公式イメージ
+（`mcr.microsoft.com/playwright/python:v1.63.0-noble`、Chromiumのシステム依存
+ライブラリを含む）を使う。`requirements.txt`のplaywrightバージョンとイメージタグの
+バージョンは必ず一致させること（pipパッケージとブラウザ本体のバージョンが
+ずれると動作しない）。
 
 ## Mac Mini上のパス（実行基盤）
 
