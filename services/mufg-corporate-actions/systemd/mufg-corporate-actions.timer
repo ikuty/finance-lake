@@ -1,0 +1,21 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdタイマーユニットの例。
+# /etc/systemd/system/mufg-corporate-actions.timer にコピーする
+# （mufg-corporate-actions.serviceと対で使う）。
+#
+# 週次（毎週月曜日）実行。jpx-daily-pdf-dl.timer（04:01:00 JST）・edinet-dl.timer
+# （04:01:30 JST）より後、finance-dwh-transform.timer（04:01:45 JST）より前の
+# 04:01:40 JSTに設定する。3ページの軽量なHTTP GETのみで完了するジョブのため、
+# 5秒の余裕でも十分と判断（実行順序の指定「edinet-dl, jpx-daily-pdfの後」に従う）。
+#
+# マシンのシステムタイムゾーンはUTC（Etc/UTC）だが、Tapoの電源投入時刻はJSTで管理して
+# いるため、OnCalendarにも明示的にAsia/Tokyoを指定する。
+
+[Unit]
+Description=Run mufg-corporate-actions weekly fetch (Mondays)
+
+[Timer]
+OnCalendar=Mon *-*-* 04:01:40 Asia/Tokyo
+Persistent=true
+
+[Install]
+WantedBy=timers.target

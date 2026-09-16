@@ -65,6 +65,27 @@ finance-lake/
 - ネットワークは外部から遮断されたLANに配置し、Tailscaleを導入する。開発時・GitHub
   Actionsからのデプロイとも、Tailscale+SSHでの接続を前提とする。
 
+## ブランチ戦略（2026-09-16決定）
+
+git-flowの修正版。従来の「mainへ直接コミット」は廃止した。
+
+- `main`: リリース対象のみ。
+- `dev`: `main`から派生。日常の開発はここに積む。
+- `feature/*`: `dev`から派生。新規開発・機能改修用。PRのbaseは`dev`。
+- リリース時: `dev`→`release`→`main`の順にmergeしてデプロイする。
+
+マージ方式（GitHubにはマージ先ブランチごとの強制設定は無いため、運用上の約束事として
+手動で選択する。squash・merge commitとも両リポジトリでリポジトリ設定上は有効化済み）:
+
+| 遷移 | マージ方式 |
+|---|---|
+| `feature/*` → `dev` | squash merge |
+| `dev` → `release` | merge commit |
+| `release` → `main` | merge commit |
+
+GitHub上のdefault branchは`main`のまま変更していない。PRのbaseは都度明示的に`dev`を
+指定すること（省略すると`main`向けになってしまう）。
+
 ## 実装言語・依存管理の方針（サービス共通）
 
 Python 3.12（stdlib中心）を各サービスの既定言語とする。型ヒント＋`mypy --strict`、
@@ -83,6 +104,11 @@ Python 3.12（stdlib中心）を各サービスの既定言語とする。型ヒ
   形式A/形式B確定済み過去年分の一回限りバックフィルまで実装・実行完了（468＋60ヶ月分、
   約32.4GB、エラー0件、2026-09-06）。詳細は
   `services/jpx-daily-pdf-dl/docs/file_download_design.md`参照。
+- `services/mufg-corporate-actions/`: 3つ目のレイク層サービス。三菱UFJ eスマート証券
+  （kabu.com）が公開する株式分割・株式併合・商号変更情報を取得・保存する。**個人利用
+  限定**（kabu.com利用規約により商用利用・第三者への再配信は不可のため）。3ページとも
+  「その時点での全履歴」を再掲載する形式のためバックフィル概念が無く、週次（月曜）
+  実行のみ。サービス本体実装完了（2026-09-16）。詳細は`services/mufg-corporate-actions/CLAUDE.md`参照。
 
 ## 次にやること（未着手）
 
