@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
 """三菱UFJ eスマート証券（kabu.com、旧auカブコム証券）が公開する株式分割・株式併合・
-商号変更ページを週次で取得し、生HTMLのまま保存する。
+商号変更ページを週次で取得し、レンダリング後のHTMLをそのまま保存する。
 
 個人利用限定（kabu.com利用規約「投資情報に関するご注意事項」
 https://kabu.com/info/investment_advisory.html により、東証等の情報提供元データの
 商用利用・第三者への提供目的での加工/再利用/再配信は不可。詳細はCLAUDE.md参照）。
+
+**単純なHTTP GETでは取得できない**（2026-09-16実機確認）。対象3ページはテーブルの
+実データを`<script src="/process/{name}.js">`が指す別ファイル内で
+`document.write()`により描画しており、素のHTML（GET直後のレスポンス）には
+`<div id="main">`と空のscriptタグしか含まれない。この.jsファイル自体は外部への
+追加問い合わせ無しに完結した自己完結ファイル（実データが文字列リテラル・変数として
+埋め込まれている）だが、`document.write()`呼び出しの内部実装（比率計算用の
+一時変数等）に直接依存したパーサーを書くと、kabu.com側の描画ロジックが変わる
+たびに壊れる。そのため**Playwrightでheadless Chromiumにより実際にレンダリングし、
+最終的な完成後HTML（<table>が実データで埋まった状態）を保存する**方針とした
+（2026-09-16決定。DWH側のパーサーは標準的な<table>構造にのみ依存すればよくなる）。
+このリポジトリで初めてPlaywright/Chromiumを導入するが、今後もJavaScript描画に
+依存するサイトからの取得が発生する見込みのため、汎用的な基盤として位置づける。
 
 3ページ（株式分割・株式併合・商号変更）はいずれも「その時点での全履歴＋今後の予定」を
 1ページに再掲載する形式で、EDINET/JPXのような日付ごとの独立ファイルではない
@@ -33,10 +46,12 @@ import os
 import sqlite3
 import sys
 import time
-import urllib.error
 import urllib.request
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Page, sync_playwright
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -123,28 +138,22 @@ def store_progress(
     conn.commit()
 
 
-def _http_get(url: str, max_retries: int = 5) -> bytes:
-    """共通のHTTPフェッチ+リトライ。429・5xx・ネットワークエラー/タイムアウトは最大5回
-    指数バックオフでリトライ、それ以外の4xxは即座に呼び出し元へ伝播させる
-    （jpx-daily-pdf-dlの_http_getと同じ方針）。"""
+def _render_html(page: Page, url: str, max_retries: int = 5) -> str:
+    """PlaywrightでURLを開き、JavaScript実行後(document.write完了後)の完全なHTML
+    を返す。<script src>によるdocument.writeはパーサーをブロックする同期実行の
+    ため、Playwrightの既定の遷移待ち（load イベント）で描画完了まで待てる
+    （2026-09-16実機確認、追加のセレクタ待機は不要）。タイムアウト・ネットワーク
+    エラーは最大5回指数バックオフでリトライする
+    （jpx-daily-pdf-dl等の_http_getと同じ方針）。"""
     attempt = 0
     while True:
         attempt += 1
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-                body: bytes = resp.read()
-                return body
-        except urllib.error.HTTPError as e:
-            retryable = e.code == 429 or 500 <= e.code < 600
-            if not retryable:
-                raise
+            page.goto(url, timeout=30_000)
+            return page.content()
+        except PlaywrightError as e:
             if attempt > max_retries:
-                raise RuntimeError(f"{url}: リトライ上限に達しました (status={e.code})") from e
-            time.sleep(min(60, 2**attempt))
-        except (urllib.error.URLError, OSError) as e:
-            if attempt > max_retries:
-                raise RuntimeError(f"{url}: ネットワークエラーが続くためリトライ上限に達しました ({e})") from e
+                raise RuntimeError(f"{url}: リトライ上限に達しました ({e})") from e
             time.sleep(min(60, 2**attempt))
 
 
@@ -168,7 +177,13 @@ def page_path(data_dir: Path, date_str: str, fmt: str) -> Path:
 
 
 def fetch_one(
-    conn: sqlite3.Connection, data_dir: Path, date_str: str, fmt: str, logger: logging.Logger, force: bool
+    conn: sqlite3.Connection,
+    data_dir: Path,
+    date_str: str,
+    fmt: str,
+    logger: logging.Logger,
+    force: bool,
+    page: Page,
 ) -> tuple[bool, int]:
     """1ページぶんを取得する。戻り値は (成功したか, ダウンロードバイト数(スキップ時は0))。"""
     if not force and already_done(conn, date_str, fmt):
@@ -178,7 +193,8 @@ def fetch_one(
     url = f"https://{BASE_HOST}{rel_path}"
     dest = page_path(data_dir, date_str, fmt)
     try:
-        body = _http_get(url)
+        html = _render_html(page, url)
+        body = html.encode("utf-8")
         save_atomic(dest, body)
         store_progress(conn, date_str, fmt, "done", url, None)
         logger.info(f"{date_str} ({fmt}): 取得成功 ({len(body)}バイト)")
@@ -238,10 +254,16 @@ def main() -> None:
     date_str = today_jst().isoformat()
     results: dict[str, bool] = {}
     downloaded_bytes = 0
-    for fmt in PAGES:
-        ok, n_bytes = fetch_one(conn, data_dir, date_str, fmt, logger, args.force)
-        results[fmt] = ok
-        downloaded_bytes += n_bytes
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        try:
+            page = browser.new_page(user_agent=USER_AGENT)
+            for fmt in PAGES:
+                ok, n_bytes = fetch_one(conn, data_dir, date_str, fmt, logger, args.force, page)
+                results[fmt] = ok
+                downloaded_bytes += n_bytes
+        finally:
+            browser.close()
 
     summary = build_slack_message(date_str, results, downloaded_bytes)
     logger.info(summary.replace("\n", " / "))
