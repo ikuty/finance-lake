@@ -5,77 +5,51 @@
 メタデータの列展開・検索用インデックス作成、および中身の解釈（パース）はレイク層の
 責務外とし、後段の別リポジトリ（ウェアハウス層・マート層・アプリ）が担う。
 
-## リポジトリ構成（2026-09-02決定）
+## リポジトリ構成
 
 ```
 finance-lake/
-├── services/
-│   └── edinet-dl/       # EDINET書類取得サービス（詳細はservices/edinet-dl/README.md参照）
+├── services/             # サービスごとに自己完結（scripts/tests/docker/systemd/docs等）
 ├── docs/
-│   └── mac_mini_setup_runbook.md   # 実行基盤（Mac Mini）自体のセットアップ（サービス非依存）
+│   └── mac_mini_setup_runbook.md   # 実行基盤（Mac Mini）自体のセットアップ
 ├── .github/workflows/    # サービスごとにワークフローを分け、pathsフィルタで対象を絞る
 └── CLAUDE.md             # このファイル（レイヤ全体の方針）
 ```
 
-- 各サービスは`services/<サービス名>/`配下に自己完結で置く（`scripts`・`tests`・`docker`・
-  `systemd`・`docs`・`pyproject.toml`・`.env`等、そのサービス固有のものはすべてここに含める）。
-  サービス固有の設計判断・実装状況は各サービスの`README.md`/`CLAUDE.md`を参照。
-- 元々は`edinet-dl`という単一サービスのリポジトリだったが、レイク層に複数サービスが
-  今後増える見込みとなり、サービス単位でリポジトリを増やすとリポジトリ管理コスト
-  （CI/CD設定・シークレット管理・README保守）が線形に積み上がるため、レイヤ単位の
-  モノレポに再編した（旧リポジトリ名`edinet-dl`→`finance-lake`）。
+サービス一覧・各サービスの詳細は[README.md](./README.md)、設計判断・実装状況は
+各`services/<サービス名>/README.md`・`CLAUDE.md`を参照。
 
-## サービス分割の考え方（レイヤ間）
+## 設計方針
 
-- **レイク層とその後段（ウェアハウス層・マート層等）は別リポジトリ**とする。取得は
-  外部APIの可用性・レート制限に依存し安定させたい一方、インデックス設計・解釈ロジックは
-  今後何度も変わる見込みであり、変更のたびに外部データソースへ再アクセスせず保存済みの
-  生データに対してのみ再処理できることが重要なため。
-  - HTTP APIやメッセージキューは導入せず（over engineering回避）、SQLite/ローカル
-    ファイルストレージという共有ストレージを境界にした疎結合な別リポジトリ・別コンテナ・
-    別スケジュールとする。
-- **レイク層内のサービス同士**（`services/`配下）は、変更頻度・安定性の性質が近いため、
-  同一モノレポにまとめる。無理にリポジトリを分ける理由が無い。
+- **レイク層とその後段（ウェアハウス層等）は別リポジトリ**。取得は外部APIの可用性・
+  レート制限に依存し安定させたい一方、解釈ロジックは変わりやすく、変更のたびに外部へ
+  再アクセスせず保存済み生データのみで再処理できることが重要なため。HTTP API/MQは
+  導入せず、SQLite/ローカルファイルという共有ストレージを境界にした疎結合構成とする。
+- **レイク層内のサービス同士**は変更頻度・安定性が近いため同一モノレポにまとめる。
+- 依存追加は慎重に判断し、標準ライブラリで完結できるならそちらを優先する
+  （over engineering回避）。Python 3.12・`mypy --strict`・`pytest`を既定とする。
 
-## 実行基盤（共有インフラ、サービス非依存）
+## 実行基盤（共有インフラ）
 
-- Mac Mini 2012 + Ubuntu 24.04 LTS上のDockerで動かす。OS用SSD(`/`, 250GB)とストレージ用
-  HDD(`/home`, 500GB)を持つ。リポジトリ本体・各サービスの`.env`・データ（進捗管理DB・
-  取得したファイル本体）は、すべて`/home`配下（HDD側）に統一して配置する。SSD側には
-  OS以外を置かない。**データレイク本体（書類・PDF本体等の主要ストレージ）はクラウド
-  ストレージ（S3等）を使わない**。ただし副次的な公開用途（`jpx-daily-pdf-dl`の
-  バックフィル進捗レポート1ファイルのみ、秘匿情報を含まない）に限り、S3（静的サイト
-  ホスティング、7日ライフサイクルで自動削除）を例外的に利用する（2026-09-06決定。
-  詳細は`services/jpx-daily-pdf-dl/docs/file_download_design.md`「バックフィル進捗
-  レポートの公開（S3）」参照）。
-- マシンはスマートプラグ（Tapo P110M）で毎日定時に電源投入・遮断される。電源投入時は
-  `setpci`の設定によりOSが自動起動する。各サービスの日次ジョブは、電源ON〜OFFの時間枠内
-  で処理を終えてOSをシャットダウンする必要がある。
-- 実行方式はsystemdタイマーに統一する（`docker run --rm`を叩くだけ、コンテナ内に
-  cron/systemdデーモンは置かない）。`OnCalendar`（固定時刻）＋`Persistent=true`を使い、
-  `OnBootSec`（起動からの相対時刻）は採用しない（開発時にTailscale経由で手動起動した
-  セッションでもジョブ＋シャットダウンが毎回走ってしまうのを避けるため）。
-- シャットダウンは各サービスのunitでは行わず、全サービス共通の共有unit
-  （`systemd/finance-lake-shutdown.service`）が一手に引き受ける（2026-09-06決定）。
-  各サービスのunitに`shutdown`を持たせると、「そのサービスが最後に終わる」という前提に
-  依存する非対称な設計になり、サービスが増えるほど壊れやすくなるため。共有unitは
-  `After=`で各サービスを列挙し、実行中なら待ってからシャットダウンする。
-  `After=`には**別リポジトリ`finance-dwh`が配置する`finance-dwh-transform.service`も
-  含む**（レイクの取得後にDWHの変換ジョブが走るため。2026-09-11追記）。
-- ネットワークは外部から遮断されたLANに配置し、Tailscaleを導入する。開発時・GitHub
-  Actionsからのデプロイとも、Tailscale+SSHでの接続を前提とする。
+- Mac Mini 2012 + Ubuntu 24.04 + Docker。OS用SSD(`/`)とストレージ用HDD(`/home`)を持ち、
+  リポジトリ本体・`.env`・データは`/home`側に統一配置。データレイク本体はクラウド
+  ストレージを使わない（例外: `jpx-daily-pdf-dl`のバックフィル進捗レポートのみS3で
+  公開、詳細は`services/jpx-daily-pdf-dl/docs/file_download_design.md`）。
+- スマートプラグ（Tapo P110M）で毎日定時に電源投入・遮断。各サービスの日次ジョブは
+  電源ON〜OFFの時間枠内で処理を終えシャットダウンする必要がある。
+- 実行方式はsystemdタイマーに統一（`OnCalendar`＋`Persistent=true`、`OnBootSec`は
+  不採用）。シャットダウンは各サービスのunitでは行わず、共有unit
+  `systemd/finance-lake-shutdown.service`が`After=`で全サービス（`finance-dwh`側の
+  `finance-dwh-transform.service`含む）を列挙し待機してから実行する。
+- ネットワークは外部から遮断されたLANにTailscaleを導入。開発・CIデプロイともに
+  Tailscale+SSH経由。
 
 ## ブランチ戦略（2026-09-16決定）
 
-git-flowの修正版。従来の「mainへ直接コミット」は廃止した。
+git-flowの修正版。`main`への直接コミットは廃止。
 
-- `main`: リリース対象のみ。
-- `dev`: `main`から派生。日常の開発はここに積む。
-- `feature/*`: `dev`から派生。新規開発・機能改修用。PRのbaseは`dev`。
+- `main`: リリース対象のみ。`dev`: 日常の開発。`feature/*`: `dev`から派生、PRのbaseは`dev`。
 - リリース時: `dev`→`release`→`main`の順にmergeしてデプロイする。
-
-マージ方式（GitHubにはマージ先ブランチごとの強制設定は無いため、運用上の約束事として
-手動で選択する。squash・merge commitとも両リポジトリでリポジトリ設定上は有効化済み）:
 
 | 遷移 | マージ方式 |
 |---|---|
@@ -83,51 +57,15 @@ git-flowの修正版。従来の「mainへ直接コミット」は廃止した�
 | `dev` → `release` | merge commit |
 | `release` → `main` | merge commit |
 
-GitHub上のdefault branchは`main`のまま変更していない。PRのbaseは都度明示的に`dev`を
-指定すること（省略すると`main`向けになってしまう）。
-
-## 実装言語・依存管理の方針（サービス共通）
-
-Python 3.12（stdlib中心）を各サービスの既定言語とする。型ヒント＋`mypy --strict`、
-テストは`pytest`。依存追加は慎重に判断し、標準ライブラリで完結できるならそちらを優先
-する（over engineering回避）。他言語・他フレームワークが必要な場合はサービスごとに
-判断してよいが、まずはこの構成を既定とする。
-
-## 現状（2026-09-06時点）
-
-- `services/edinet-dl/`: 実装・デプロイ済み。詳細は`services/edinet-dl/README.md`・
-  `services/edinet-dl/CLAUDE.md`参照。
-- `services/jpx-daily-pdf-dl/`: 2つ目のレイク層サービス。日本取引所グループ（JPX）の
-  日次株式相場表PDFを取得・保存する。**個人利用限定**（JPX利用規約により商用目的の
-  二次利用・生成AIによる不適切な利用は不可のため）。サービス本体（形式C＋形式Bの
-  `03.html`列挙分）・Mac Miniへのデプロイ・Slack通知・バックフィル進捗レポート・
-  形式A/形式B確定済み過去年分の一回限りバックフィルまで実装・実行完了（468＋60ヶ月分、
-  約32.4GB、エラー0件、2026-09-06）。詳細は
-  `services/jpx-daily-pdf-dl/docs/file_download_design.md`参照。
-- `services/mufg-corporate-actions/`: 3つ目のレイク層サービス。三菱UFJ eスマート証券
-  （kabu.com）が公開する株式分割・株式併合・商号変更情報を取得・保存する。**個人利用
-  限定**（kabu.com利用規約により商用利用・第三者への再配信は不可のため）。3ページとも
-  「その時点での全履歴」を再掲載する形式のためバックフィル概念が無く、週次（月曜）
-  実行のみ。サービス本体実装完了（2026-09-16）。詳細は`services/mufg-corporate-actions/CLAUDE.md`参照。
+GitHub上のdefault branchは`main`のまま（変更していない）。PRのbaseは都度明示的に
+`dev`を指定すること（省略すると`main`向けになる）。
 
 ## 次にやること（未着手）
 
-- `services/jpx-daily-pdf-dl/`のバックフィル進捗レポートのSlack通知方法の見直し
-  （現状: GitHub Actions Artifact経由。指摘: Mac Mini実行時にHTML添付でSlackへ
-  直接送るべき。Slack Files API（Bot Token＋`files:write`）が必要、未着手）
-- ウェアハウス層は別リポジトリ`finance-dwh`で着手済み（2026-09-11時点、raw層のみ実装。
-  PostgreSQL + dbt Core + Prefect + `file_fdw`でレイクのファイルを外部テーブル化）。
-  cleansed/mart層・アプリの設計は今後。Mac Miniデプロイ時に共有シャットダウンunitの
-  `After=`へ`finance-dwh-transform.service`を追記する（unitファイルには反映済み）。
-- **前日終値の低遅延取得**（新規サービス、将来着手、2026-09-06決定）: `jpx-daily-pdf-dl`
-  のPDF日報は実測で2営業日以上の遅延があり、「翌日に前日終値を取得する」用途には
-  使えないと判明した。無料の代替手段（GOOGLEFINANCE・Stooq・証券会社ログイン・
-  立花証券e支店API・楽天証券マーケットスピード2 RSS等の他社類似機能）を一通り検証
-  したが、規約・技術的制約（GOOGLEFINANCEは東証データへのアクセス権限なし、Stooqは
-  robots.txtで自動アクセス全面禁止、証券会社ログインは認証情報を扱えず不可、アプリ
-  連携型RSSは「アプリ起動中のみ」という制約がありMac Mini常時稼働との相性が悪い）
-  により、いずれも採用を見送った。**他のサービスの構築が一通り進んだ後、J-Quants
-  Lightプラン（月額1,650円）を契約して対応する**方針とした。有料プランは可能な限り
-  避けたいという方針だったが、無料代替手段を実地検証で使い尽くした結果としての
-  受け入れ。詳細な検証過程はセッション履歴を参照（設計ドキュメント化はサービス
-  着手時に行う）。
+- `jpx-daily-pdf-dl`のバックフィル進捗レポート: Slack通知をGitHub Actions Artifact
+  経由からSlack Files API（Bot Token＋`files:write`）直接送付へ変更する。
+- ウェアハウス層（`finance-dwh`）: raw/cleansed層は着手済み、mart層・アプリは今後。
+- **前日終値の低遅延取得**（将来着手、2026-09-06決定）: `jpx-daily-pdf-dl`のPDF日報は
+  2営業日以上遅延し不適。無料代替手段（GOOGLEFINANCE・Stooq・証券会社ログイン等）は
+  規約・技術制約により全て見送り済み。他サービスが一段落後、J-Quants Lightプラン
+  （月額1,650円）契約で対応する方針。
