@@ -1,0 +1,7 @@
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["scripts", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
