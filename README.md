@@ -9,6 +9,7 @@
 |---|---|
 | [`services/edinet-dl`](./services/edinet-dl) | EDINET（金融庁の電子開示システム）から書類ファイルを取得・保存する |
 | [`services/jpx-daily-pdf-dl`](./services/jpx-daily-pdf-dl) | 日本取引所グループ（JPX）の日次株式相場表PDFを取得・保存する（個人利用限定） |
+| [`services/mufg-corporate-actions`](./services/mufg-corporate-actions) | 三菱UFJ eスマート証券（kabu.com）の株式分割・株式併合・商号変更ページを取得・保存する（個人利用限定） |
 
 ## 実行基盤
 
@@ -22,6 +23,9 @@ systemd実行方式）のセットアップ手順は[docs/mac_mini_setup_runbook
 - 出典：日本取引所グループ 統計情報（株式関連）、
   https://www.jpx.co.jp/markets/statistics-equities/daily/index.html
   （個人利用限定。JPX利用規約により商用目的の二次利用は不可）
+- 出典：三菱UFJ eスマート証券（kabu.com）、
+  https://kabu.com/investment/meigara/bunkatu.html 他
+  （個人利用限定。kabu.com利用規約により商用利用・第三者への再配信は不可）
 
 ## ライセンス
 
