@@ -1,3 +1,6 @@
-# 標準ライブラリのみで完結する（urllib.request・sqlite3・json）。
-# バックフィル概念が無くS3アップロードも行わないため、boto3は不要
-# （edinet-dl・jpx-daily-pdf-dlとの違い）。
+# kabu.comの対象ページはJavaScript(document.write方式)でテーブルを描画するため、
+# 単純なurllib.requestでは空のシェルHTMLしか取得できない(2026-09-16実機確認)。
+# Playwrightでレンダリング後のHTMLを取得する。バージョンはDockerfileのベース
+# イメージ（Playwright公式イメージ）と厳密に一致させること（pipパッケージと
+# ブラウザ本体のバージョンがずれると動作しないため、~=ではなく完全一致で固定）。
+playwright==1.63.0
