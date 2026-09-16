@@ -1,0 +1,24 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdサービスユニットの例。
+# /etc/systemd/system/mufg-corporate-actions.service にコピーし、自分の環境の実際の
+# ユーザー名・パスに合わせて書き換えること。
+#
+# このunitはシャットダウンのExecStartを持たない。マシンのシャットダウンは共有unit
+# （リポジトリ直下のsystemd/finance-lake-shutdown.service）が全サービス共通で
+# 一手に引き受ける。finance-lake-shutdown.serviceの`After=`に本サービスを追記済み
+# のため、実行中であればシャットダウンの開始を自動的に待つ。
+#
+# 有効化・起動確認:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable mufg-corporate-actions.timer
+#   sudo systemctl start mufg-corporate-actions.timer
+#   systemctl list-timers mufg-corporate-actions.timer
+#   journalctl -u mufg-corporate-actions.service
+
+[Unit]
+Description=Run mufg-corporate-actions weekly fetch
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/finance-lake/services/mufg-corporate-actions/.env -v /home/<user>/finance-lake/data/mufg-corporate-actions:/data mufg-corporate-actions:latest

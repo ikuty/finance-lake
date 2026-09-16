@@ -1,0 +1,3 @@
+# 標準ライブラリのみで完結する（urllib.request・sqlite3・json）。
+# バックフィル概念が無くS3アップロードも行わないため、boto3は不要
+# （edinet-dl・jpx-daily-pdf-dlとの違い）。
