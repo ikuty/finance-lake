@@ -60,6 +60,21 @@ def test_load_done_dates_filters_by_status(tmp_path: Path) -> None:
     assert br.load_done_dates(db_path) == {datetime.date(2026, 9, 1)}
 
 
+# --- load_error_dates -------------------------------------------------------------------
+
+
+def test_load_error_dates_returns_empty_when_db_missing(tmp_path: Path) -> None:
+    assert br.load_error_dates(tmp_path / "nonexistent.db") == set()
+
+
+def test_load_error_dates_filters_by_status(tmp_path: Path) -> None:
+    db_path = _make_db(tmp_path, [
+        ("2026-09-01", "done"),
+        ("2026-09-02", "error"),
+    ])
+    assert br.load_error_dates(db_path) == {datetime.date(2026, 9, 2)}
+
+
 # --- render_table -----------------------------------------------------------------------
 
 
@@ -68,6 +83,18 @@ def test_render_table_marks_done_and_blank_cells() -> None:
     html = br.render_table(dates, done={datetime.date(2026, 9, 1)})
     assert '<td class="done">*</td>' in html
     assert html.count("<td></td>") == 1
+
+
+def test_render_table_marks_error_cells_distinctly_from_done_and_blank() -> None:
+    dates = [datetime.date(2026, 9, 1), datetime.date(2026, 9, 2), datetime.date(2026, 9, 3)]
+    html = br.render_table(
+        dates,
+        done={datetime.date(2026, 9, 1)},
+        error={datetime.date(2026, 9, 2)},
+    )
+    assert '<td class="done">*</td>' in html
+    assert '<td class="error">×</td>' in html
+    assert html.count("<td></td>") == 1  # 9/3のみ未取得の空欄
 
 
 def test_render_table_marks_nonexistent_days_as_na() -> None:
@@ -104,3 +131,11 @@ def test_generate_report_html_returns_html_and_summary(tmp_path: Path) -> None:
     assert "<html" in html
     assert 'id="grid"' in html
     assert "日完了" in summary
+
+
+def test_generate_report_html_includes_error_count_in_summary(tmp_path: Path) -> None:
+    db_path = _make_db(tmp_path, [("2016-08-15", "done"), ("2016-08-16", "error")])
+    html, summary = br.generate_report_html(db_path)
+
+    assert '<td class="error">×</td>' in html
+    assert "失敗1日" in summary
