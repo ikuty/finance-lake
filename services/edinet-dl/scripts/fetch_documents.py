@@ -592,7 +592,7 @@ def run(
     type_names = ",".join(TYPE_SUFFIX[t] for t in sorted(enabled_types))
     logger.info(
         f"対象期間: {start} 〜 {end}（{len(dates)}日間）/ 未取得: {len(todo)}日 / "
-        f"force={force} / 対象type: {type_names} / 時間予算: {time_budget_seconds / 60:.0f}分"
+        f"force={force} / 対象type: {type_names} / 時間予算: {time_budget_seconds:.0f}秒"
     )
 
     run_started = time.monotonic()
@@ -603,7 +603,7 @@ def run(
             stats.stopped_by_time_budget = True
             stats.days_remaining = len(todo) - i
             logger.info(
-                f"時間予算({time_budget_seconds / 60:.0f}分)に達したため中断"
+                f"時間予算({time_budget_seconds:.0f}秒)に達したため中断"
                 f"（残り{stats.days_remaining}日は次回以降に持ち越し）"
             )
             break
