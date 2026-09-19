@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import sqlite3
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
@@ -49,21 +50,37 @@ def backfillable_dates(start: datetime.date, end: datetime.date) -> list[datetim
 def load_done_dates(db_path: Path) -> set[datetime.date]:
     """fetch_progressテーブルから、status='done'な日付の集合を返す。
     DBファイルが無い場合は空集合を返す。"""
+    return _load_dates_by_status(db_path, "done")
+
+
+def load_error_dates(db_path: Path) -> set[datetime.date]:
+    """fetch_progressテーブルから、status='error'な日付の集合を返す（取得を試みて
+    失敗した日。まだ一度も試みていない未取得日とは区別する）。DBファイルが無い場合は
+    空集合を返す。"""
+    return _load_dates_by_status(db_path, "error")
+
+
+def _load_dates_by_status(db_path: Path, status: str) -> set[datetime.date]:
     if not db_path.exists():
         return set()
 
     conn = sqlite3.connect(db_path)
     try:
-        rows = conn.execute("SELECT fileDate FROM fetch_progress WHERE status = 'done'").fetchall()
+        rows = conn.execute("SELECT fileDate FROM fetch_progress WHERE status = ?", (status,)).fetchall()
     finally:
         conn.close()
 
     return {datetime.date.fromisoformat(d) for (d,) in rows}
 
 
-def render_table(dates_in_scope: list[datetime.date], done: set[datetime.date]) -> str:
+def render_table(
+    dates_in_scope: list[datetime.date],
+    done: set[datetime.date],
+    error: AbstractSet[datetime.date] = frozenset(),
+) -> str:
     """表本体（<table>...</table>）を返す。行は年月（新しい方が上）、列は日
-    （01〜31、月に存在しない日は網掛け）。"""
+    （01〜31、月に存在しない日は網掛け）。doneは取得済み(*)、errorは取得を試みて
+    失敗した日(×、未取得の空欄とは区別する)。"""
     days_by_year_month: dict[tuple[int, int], set[int]] = {}
     for d in dates_in_scope:
         days_by_year_month.setdefault((d.year, d.month), set()).add(d.day)
@@ -75,10 +92,13 @@ def render_table(dates_in_scope: list[datetime.date], done: set[datetime.date]) 
         present_days = days_by_year_month[(year, month)]
         cells = []
         for day in range(1, 32):
-            if day not in present_days:
+            cell_date = datetime.date(year, month, day) if day in present_days else None
+            if cell_date is None:
                 cells.append('<td class="na"></td>')
-            elif datetime.date(year, month, day) in done:
+            elif cell_date in done:
                 cells.append('<td class="done">*</td>')
+            elif cell_date in error:
+                cells.append('<td class="error">×</td>')
             else:
                 cells.append("<td></td>")
         row_lines.append(f"<tr><th>{year}-{month:02d}</th>{''.join(cells)}</tr>")
@@ -103,6 +123,7 @@ def render_page(table_html: str, earliest_date: datetime.date) -> str:
             padding: 0; }}
   th {{ background: #f0f0f0; font-weight: normal; }}
   td.done {{ background: #cdeccd; }}
+  td.error {{ background: #f3c6c6; color: #a33; }}
   td.na {{ background: #eee; }}
   #legend {{ margin-top: 6px; color: #666; }}
 </style>
@@ -111,13 +132,15 @@ def render_page(table_html: str, earliest_date: datetime.date) -> str:
 <h1>edinet-dl バックフィル進捗（{earliest_date.isoformat()}〜）</h1>
 <div id="summary"></div>
 {table_html}
-<div id="legend">* = 取得済み / 空欄 = 未取得 / 網掛け = 月に存在しない日</div>
+<div id="legend">* = 取得済み / × = 取得失敗（要再取得） / 空欄 = 未取得 / 網掛け = 月に存在しない日</div>
 <script>
   var total = document.querySelectorAll("#grid td:not(.na)").length;
   var doneCount = document.querySelectorAll("#grid td.done").length;
+  var errorCount = document.querySelectorAll("#grid td.error").length;
   var pct = total ? (doneCount / total * 100).toFixed(1) : "0.0";
   document.getElementById("summary").textContent =
-    "完了: " + doneCount + " / " + total + " 日 (" + pct + "%)";
+    "完了: " + doneCount + " / " + total + " 日 (" + pct + "%)" +
+    (errorCount ? " / 失敗: " + errorCount + " 日" : "");
 </script>
 </body>
 </html>
@@ -131,11 +154,15 @@ def generate_report_html(db_path: Path) -> tuple[str, str]:
     end = last_complete_day_jst()
     dates_in_scope = backfillable_dates(EARLIEST_DATE, end)
     done = load_done_dates(db_path)
-    table = render_table(dates_in_scope, done)
+    error = load_error_dates(db_path)
+    table = render_table(dates_in_scope, done, error)
     html = render_page(table, EARLIEST_DATE)
 
     done_count = sum(1 for d in dates_in_scope if d in done)
+    error_count = sum(1 for d in dates_in_scope if d in error)
     summary = f"{done_count}/{len(dates_in_scope)}日完了"
+    if error_count:
+        summary += f"（失敗{error_count}日）"
     return html, summary
 
 
