@@ -304,7 +304,18 @@ def fetch_day(
         attempt += 1
         body = client.get(path, stats, max_retries=max_retries)
         data: dict[str, Any] = json.loads(body.decode("utf-8"))
-        status = str(data.get("metadata", {}).get("status", "200"))
+        metadata = data.get("metadata")
+        if metadata is not None:
+            status = str(metadata.get("status", "200"))
+            message = str(metadata.get("message", "unknown error"))
+        else:
+            # metadataキーが無い場合、EDINET本体ではなくAPI Gateway等の手前の層からの
+            # エラー応答("statusCode"キー、例: {"statusCode": "429", "message":
+            # "Too Many Requests"})である可能性を疑う。実機で発生・確認済み: この形の
+            # レスポンスは従来検知されずそのまま保存され、過去の一括バックフィル時に
+            # 491日分のdocument_list.jsonが欠損する障害になった(2026-09-19判明)。
+            status = str(data.get("statusCode", "200"))
+            message = str(data.get("message", "unknown error"))
 
         if status == "429":
             stats.rate_limit_retries += 1
@@ -314,8 +325,12 @@ def fetch_day(
             continue
 
         if status not in ("200", "OK"):
-            message = data.get("metadata", {}).get("message", "unknown error")
             raise RuntimeError(f"{date_str}: EDINET APIエラー status={status} message={message}")
+
+        if "results" not in data:
+            # statusが200/OK相当でもresultsキーが無ければ、想定外のレスポンス形。
+            # 中身が空のまま「成功」として保存されるのを防ぐため、ここで確実に失敗させる。
+            raise RuntimeError(f"{date_str}: 想定外のレスポンス形(resultsキーが無い): {body[:200]!r}")
 
         return data
 

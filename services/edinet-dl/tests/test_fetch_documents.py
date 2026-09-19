@@ -295,6 +295,40 @@ def test_fetch_day_retries_on_embedded_429_status(monkeypatch: pytest.MonkeyPatc
     assert stats.rate_limit_retries == 1
 
 
+def test_fetch_day_retries_on_gateway_style_429_without_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    # metadataキーを持たない{"statusCode": "429", ...}形のレスポンス(API Gateway等の
+    # 手前の層からのエラーと見られる、2026-09-19実機で発見)。従来はmetadataキーが
+    # 無いためstatus="200"にデフォルトされ、エラーとして検知されなかった。
+    gateway_429 = json.dumps({"statusCode": "429", "message": "Too Many Requests"}).encode("utf-8")
+    stats = make_stats()
+    client = make_client(
+        (200, gateway_429),
+        (200, make_response("200", [{"docID": "S100AAAA"}])),
+    )
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    data = fetch_documents.fetch_day(client, "2026-08-13", "dummy-key", stats)
+    assert data["results"][0]["docID"] == "S100AAAA"
+    assert stats.rate_limit_retries == 1
+
+
+def test_fetch_day_raises_on_gateway_style_error_without_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    gateway_error = json.dumps({"statusCode": "500", "message": "Internal Server Error"}).encode("utf-8")
+    stats = make_stats()
+    client = make_client((200, gateway_error))
+    with pytest.raises(RuntimeError, match="500"):
+        fetch_documents.fetch_day(client, "2026-08-13", "dummy-key", stats)
+
+
+def test_fetch_day_raises_when_results_key_missing_despite_ok_status() -> None:
+    # statusが200/OK相当でもresultsキーが無ければ、想定外のレスポンス形として
+    # 明示的に失敗させる(中身が空のまま「成功」扱いになるのを防ぐ)。
+    ok_but_no_results = json.dumps({"metadata": {"status": "200"}}).encode("utf-8")
+    stats = make_stats()
+    client = make_client((200, ok_but_no_results))
+    with pytest.raises(RuntimeError, match="results"):
+        fetch_documents.fetch_day(client, "2026-08-13", "dummy-key", stats)
+
+
 # --- doc_output_path / save_atomic ------------------------------------------------
 
 
