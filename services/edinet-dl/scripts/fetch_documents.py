@@ -58,6 +58,10 @@ Usage:
     LOG_PATH             省略時 /data/logs/edinet-dl.log
     REQUEST_DELAY        省略時 1.2 (秒)
     DAYS_WINDOW          省略時 3。--days未指定時に日次実行で遡る日数
+    TIME_BUDGET_SECONDS  省略時 5400 (90分)。実行開始からこの秒数を超えたら、
+                         残りの対象日を処理せず打ち切る（電源枠を使い切らないための
+                         安全弁。中断された日はfetch_progress未更新のまま残り、
+                         次回実行で自動的に再試行される。2026-09-19追加）
     SLACK_WEBHOOK_URL    省略可。設定時のみ実行結果をSlackへ通知する
     S3_BUCKET_NAME       省略可。設定時のみバックフィル進捗レポートをS3へアップロード
                          し、公開URLをSlack通知に含める（2026-09-08追加。詳細は
@@ -104,6 +108,12 @@ DEFAULT_DELAY = 1.2
 DEFAULT_S3_REGION = "ap-northeast-1"
 S3_REPORT_KEY = "edinet-dl/backfill_report.html"
 DEFAULT_DAYS_WINDOW = 3
+# 電源枠(Mac Mini実機で2時間)を使い切らないための時間予算(2026-09-19導入)。
+# 429で欠損していた過去日の再取得バックログが数百日規模になり得るため、日次実行の
+# 1回だけで電源枠を使い切ると後続のfinance-dwh側の変換ジョブに割り当てる時間が
+# 無くなる。既定90分は「電源枠2時間のうち前半をedinet-dlに割り当てる」という運用上の
+# 目安（他のlake層サービス・DWH変換の所要時間を差し引いた余裕）。
+DEFAULT_TIME_BUDGET_SECONDS = 90 * 60
 SUSPICIOUS_DROP_RATIO = 0.5  # 一覧APIの結果件数が旧記録の半分未満なら退避対象（2026-09-04導入）
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB
 LOG_BACKUP_COUNT = 5  # 最大5世代 ≒ 合計25MB程度
@@ -146,6 +156,8 @@ class RunStats:
     downloaded_count: int = 0
     downloaded_bytes: int = 0
     rate_limit_retries: int = 0
+    stopped_by_time_budget: bool = False
+    days_remaining: int = 0
 
 
 def force_ipv4() -> None:
@@ -572,6 +584,7 @@ def run(
     logger: logging.Logger,
     log_path: str,
     enabled_types: set[int],
+    time_budget_seconds: float = DEFAULT_TIME_BUDGET_SECONDS,
 ) -> RunStats:
     dates = list(date_range(start, end))
     todo = [d for d in dates if force or not already_done(conn, d.isoformat())]
@@ -579,10 +592,22 @@ def run(
     type_names = ",".join(TYPE_SUFFIX[t] for t in sorted(enabled_types))
     logger.info(
         f"対象期間: {start} 〜 {end}（{len(dates)}日間）/ 未取得: {len(todo)}日 / "
-        f"force={force} / 対象type: {type_names}"
+        f"force={force} / 対象type: {type_names} / 時間予算: {time_budget_seconds / 60:.0f}分"
     )
 
+    run_started = time.monotonic()
+
     for i, d in enumerate(todo):
+        elapsed = time.monotonic() - run_started
+        if elapsed >= time_budget_seconds:
+            stats.stopped_by_time_budget = True
+            stats.days_remaining = len(todo) - i
+            logger.info(
+                f"時間予算({time_budget_seconds / 60:.0f}分)に達したため中断"
+                f"（残り{stats.days_remaining}日は次回以降に持ち越し）"
+            )
+            break
+
         date_str = d.isoformat()
         try:
             process_day(conn, client, date_str, api_key, data_dir, delay, stats, logger, log_path, enabled_types)
@@ -629,6 +654,9 @@ def build_slack_message(stats: RunStats, free_bytes: int) -> str:
             "✅ edinet-dl 日次実行 成功",
             f"期間: {period} ({n_days}日処理)",
         ]
+
+    if stats.stopped_by_time_budget:
+        lines.append(f"⏱️ 時間予算に達したため中断（残り{stats.days_remaining}日は次回以降に持ち越し）")
 
     lines.append(f"ダウンロード: {stats.downloaded_count}件 / {format_bytes(stats.downloaded_bytes)}")
     lines.append(f"429発生: {stats.rate_limit_retries}回")
@@ -725,6 +753,7 @@ def main() -> None:
     data_dir = Path(os.environ.get("DATA_DIR", DEFAULT_DATA_DIR))
     log_path = os.environ.get("LOG_PATH", DEFAULT_LOG_PATH)
     delay = float(os.environ.get("REQUEST_DELAY", DEFAULT_DELAY))
+    time_budget_seconds = float(os.environ.get("TIME_BUDGET_SECONDS", DEFAULT_TIME_BUDGET_SECONDS))
     slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
 
     logger = setup_logger(log_path)
@@ -733,7 +762,10 @@ def main() -> None:
 
     client = EdinetHttpClient()
     try:
-        stats = run(conn, client, api_key, start, end, delay, args.force, data_dir, logger, log_path, enabled_types)
+        stats = run(
+            conn, client, api_key, start, end, delay, args.force, data_dir, logger, log_path, enabled_types,
+            time_budget_seconds=time_budget_seconds,
+        )
     finally:
         client.close()
 
