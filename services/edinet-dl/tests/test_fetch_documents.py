@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import socket
+import sqlite3
 import sys
 import time
 import zipfile
@@ -604,6 +605,83 @@ def test_download_doc_files_returns_false_on_partial_failure(
 
     assert ok is False
     assert stats.downloaded_count == 1  # xbrl展開分だけ成功
+
+
+# --- 時間予算 -----------------------------------------------------------------------
+
+
+def test_run_stops_processing_when_time_budget_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    # run()自身が呼ぶtime.monotonic()だけを制御する(process_day内部のmonotonic呼び出しの
+    # 影響を受けないよう、process_day自体をモックする)。run_started取得 → 1日目の
+    # チェック(経過0秒、予算内) → 2日目のチェック(経過100秒、予算50秒を超過)、の順。
+    monotonic_values = iter([1000.0, 1000.0, 1100.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values))
+
+    def fake_process_day(
+        conn: sqlite3.Connection,
+        client: fetch_documents.EdinetHttpClient,
+        date_str: str,
+        api_key: str,
+        data_dir: Path,
+        delay: float,
+        stats: fetch_documents.RunStats,
+        logger: logging.Logger,
+        log_path: str,
+        enabled_types: set[int],
+    ) -> int:
+        stats.days_processed.append(date_str)
+        return 0
+
+    client = fetch_documents.EdinetHttpClient()
+    with patch("fetch_documents.process_day", side_effect=fake_process_day):
+        stats = fetch_documents.run(
+            conn, client, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 15),
+            delay=0, force=True, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
+            enabled_types=ALL_TYPES, time_budget_seconds=50,
+        )
+
+    assert stats.stopped_by_time_budget is True
+    assert stats.days_remaining == 2  # 8/14・8/15が未処理で残る
+    assert stats.days_processed == ["2026-08-13"]
+    # 未処理日はfetch_progressが更新されない(次回実行で自動的に再試行対象になる)
+    assert not fetch_documents.already_done(conn, "2026-08-14")
+    assert not fetch_documents.already_done(conn, "2026-08-15")
+
+
+def test_run_does_not_stop_when_within_time_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)  # 常に経過0秒
+
+    client = fetch_documents.EdinetHttpClient()
+    with patch("fetch_documents.fetch_day", return_value={"results": []}):
+        stats = fetch_documents.run(
+            conn, client, "dummy-key", datetime.date(2026, 8, 13), datetime.date(2026, 8, 13),
+            delay=0, force=True, data_dir=tmp_path, logger=TEST_LOGGER, log_path="test.log",
+            enabled_types=ALL_TYPES, time_budget_seconds=fetch_documents.DEFAULT_TIME_BUDGET_SECONDS,
+        )
+
+    assert stats.stopped_by_time_budget is False
+    assert stats.days_processed == ["2026-08-13"]
+
+
+def test_build_slack_message_includes_time_budget_note() -> None:
+    stats = make_stats()
+    stats.days_processed = ["2026-08-13"]
+    stats.stopped_by_time_budget = True
+    stats.days_remaining = 42
+
+    message = fetch_documents.build_slack_message(stats, free_bytes=10 * 1024**3)
+
+    assert "時間予算" in message
+    assert "残り42日" in message
 
 
 # --- run / process_day -----------------------------------------------------------
