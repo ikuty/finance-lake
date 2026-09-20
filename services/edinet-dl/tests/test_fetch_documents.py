@@ -330,6 +330,56 @@ def test_fetch_day_raises_when_results_key_missing_despite_ok_status() -> None:
         fetch_documents.fetch_day(client, "2026-08-13", "dummy-key", stats)
 
 
+# --- fetch_document_file ---------------------------------------------------------
+
+
+def test_fetch_document_file_returns_valid_zip_immediately() -> None:
+    zip_body = b"PK\x03\x04" + b"rest-of-zip"
+    stats = make_stats()
+    client = make_client((200, zip_body))
+    body = fetch_documents.fetch_document_file(client, "S100AAAA", 5, "dummy-key", stats)
+    assert body == zip_body
+    assert stats.malformed_response_retries == 0
+
+
+def test_fetch_document_file_returns_valid_pdf_immediately() -> None:
+    pdf_body = b"%PDF-1.7\n..."
+    stats = make_stats()
+    client = make_client((200, pdf_body))
+    body = fetch_documents.fetch_document_file(client, "S100AAAA", 2, "dummy-key", stats)
+    assert body == pdf_body
+    assert stats.malformed_response_retries == 0
+
+
+def test_fetch_document_file_retries_when_response_is_not_a_zip(monkeypatch: pytest.MonkeyPatch) -> None:
+    # HTTPステータスは200でもzipのマジックバイトを持たないレスポンス(API Gateway等の
+    # エラー応答本体と見られる)は、想定外の形式として検知しリトライする
+    # (2026-09-20実機で発生・確認済み: 2024-06-27に2,424件中479件が
+    # "File is not a zip file"で失敗した根本原因)。
+    gateway_error_body = json.dumps({"statusCode": "429", "message": "Too Many Requests"}).encode("utf-8")
+    real_zip = b"PK\x03\x04" + b"rest-of-zip"
+    stats = make_stats()
+    client = make_client((200, gateway_error_body), (200, real_zip))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    body = fetch_documents.fetch_document_file(client, "S100AAAA", 5, "dummy-key", stats)
+
+    assert body == real_zip
+    assert stats.malformed_response_retries == 1
+
+
+def test_fetch_document_file_raises_after_exhausting_retries_on_malformed_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway_error_body = json.dumps({"statusCode": "429", "message": "Too Many Requests"}).encode("utf-8")
+    stats = make_stats()
+    client = make_client(*[(200, gateway_error_body)] * 6)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="想定外の形式"):
+        fetch_documents.fetch_document_file(client, "S100AAAA", 5, "dummy-key", stats, max_retries=5)
+
+
 # --- doc_output_path / save_atomic ------------------------------------------------
 
 
