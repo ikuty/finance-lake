@@ -156,6 +156,7 @@ class RunStats:
     downloaded_count: int = 0
     downloaded_bytes: int = 0
     rate_limit_retries: int = 0
+    malformed_response_retries: int = 0
     stopped_by_time_budget: bool = False
     days_remaining: int = 0
 
@@ -347,11 +348,41 @@ def fetch_day(
         return data
 
 
+_ZIP_MAGIC = b"PK"
+_PDF_MAGIC = b"%PDF"
+
+
+def _looks_like_expected_format(body: bytes, type_code: int) -> bool:
+    """type_codeごとに期待される先頭バイト（マジックバイト）を持つかを確認する。
+    HTTPステータスは200でも、中身がAPI Gateway等のエラー応答(JSON等)である
+    ケースを検知するため(fetch_day()のmetadata/statusCode検知と同根の問題。
+    2026-09-20実機で発生・確認済み: 個別ファイルダウンロードAPIでもこの形の
+    レスポンスが検知されずそのままzip展開/保存され、"File is not a zip file"等の
+    失敗になっていた)。未知のtype(将来の追加)は検証をスキップし常にTrueを返す。"""
+    if type_code in ARCHIVE_TYPES:
+        return body[:2] == _ZIP_MAGIC
+    if type_code == 2:
+        return body[:4] == _PDF_MAGIC
+    return True
+
+
 def fetch_document_file(
     client: EdinetHttpClient, doc_id: str, type_code: int, api_key: str, stats: RunStats, max_retries: int = 5
 ) -> bytes:
     path = f"{DOC_API_PATH}/{doc_id}?type={type_code}&Subscription-Key={api_key}"
-    return client.get(path, stats, max_retries=max_retries)
+    attempt = 0
+    while True:
+        attempt += 1
+        body = client.get(path, stats, max_retries=max_retries)
+        if _looks_like_expected_format(body, type_code):
+            return body
+        stats.malformed_response_retries += 1
+        if attempt > max_retries:
+            raise RuntimeError(
+                f"{doc_id} type={type_code}: 想定外の形式のレスポンスが続くため"
+                f"リトライ上限に達しました: {body[:200]!r}"
+            )
+        time.sleep(min(60, 2**attempt))
 
 
 def date_hierarchy_dir(base_dir: Path, file_date: str) -> Path:
@@ -660,6 +691,8 @@ def build_slack_message(stats: RunStats, free_bytes: int) -> str:
 
     lines.append(f"ダウンロード: {stats.downloaded_count}件 / {format_bytes(stats.downloaded_bytes)}")
     lines.append(f"429発生: {stats.rate_limit_retries}回")
+    if stats.malformed_response_retries:
+        lines.append(f"想定外レスポンス(要リトライ): {stats.malformed_response_retries}回")
     lines.append(f"空き容量: {free_gb:.1f}GB")
     return "\n".join(lines)
 
