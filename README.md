@@ -15,6 +15,7 @@
 
 Mac Mini 2012 + Ubuntu 24.04 LTS上のDockerで動かす。共有インフラ（電源管理・ネットワーク・
 systemd実行方式）のセットアップ手順は[docs/mac_mini_setup_runbook.md](./docs/mac_mini_setup_runbook.md)を参照。
+レイク生データのバックアップ手順は[docs/backup_runbook.md](./docs/backup_runbook.md)を参照。
 
 ## 出典表記
 
