@@ -20,7 +20,7 @@ EDINET（金融庁の電子開示システム）から書類ファイルを取�
 
 ## edinet-dl固有の設計判断
 
-- **書類本体（実データ）の保存**（実装済み）: 対象は全上場企業（`secCode`が設定されている書類）。500GBのHDDに対して見積もり上十分な余裕があるため、クラウドへのアップロードや取得後の削除は行わない。バックアップ（HDD故障時の復旧手段）は別途検討する。
+- **書類本体（実データ）の保存**（実装済み）: 対象は全上場企業（`secCode`が設定されている書類）。500GBのHDDに対して見積もり上十分な余裕があるため、クラウドへのアップロードや取得後の削除は行わない。バックアップ（HDD故障時の復旧手段）は2026-09-23、USB外付けHDD（500GB）へのresticによる週次手動バックアップとして導入した。対象は`data/edinet-dl`を含むレイク生データ全体（`finance-dwh`側の導出データは対象外）。手順は`docs/backup_runbook.md`参照。
   - 保存先パス: `data/{fileDate}/{edinetCode}/{type}/{docID}.pdf`（PDF）、`data/{fileDate}/{edinetCode}/{type}/{docID}/（元のzip内パス）.gz`（XBRL/CSV、展開して個別gzip圧縮）。日付を最上位階層にするのは、後段の日次ingestが対象日のディレクトリだけを見れば済むようにするため。`edinetCode`を次の階層にするのは、人間がレイクを直接見たときに企業単位で判別しやすくするため。type（xbrl/csv/pdf）をさらに次の階層にするのは、後段でtype単位の一括読み込みをしやすくするため。docIDを最下層に置くのは、同一企業・同一日に複数docIDがある場合、展開後のファイル名（EDINET側の命名は書類種別ごとに同名になりやすい）が衝突するのを防ぐため。詳細は`docs/file_download_design.md`参照。
   - 大量保有報告書等、提出者の`edinetCode`と報告対象企業の`subjectEdinetCode`が異なる書類では、提出者側のディレクトリに格納される（現時点では許容）。
   - 書類一覧APIの生レスポンスも`data/response/document_list_{fileDate}.json`として保存する（詳細は`docs/file_download_design.md`参照）。
