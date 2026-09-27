@@ -33,8 +33,10 @@ finance-lake/
 
 - Mac Mini 2012 + Ubuntu 24.04 + Docker。OS用SSD(`/`)とストレージ用HDD(`/home`)を持ち、
   リポジトリ本体・`.env`・データは`/home`側に統一配置。データレイク本体はクラウド
-  ストレージを使わない（例外: `jpx-daily-pdf-dl`のバックフィル進捗レポートのみS3で
-  公開、詳細は`services/jpx-daily-pdf-dl/docs/file_download_design.md`）。
+  ストレージを使わない（例外: `jpx-daily-pdf-dl`のバックフィル進捗レポート、
+  `ir-disclosure-dl`の実行状況レポートのみS3で公開、詳細はそれぞれ
+  `services/jpx-daily-pdf-dl/docs/file_download_design.md`・
+  `services/ir-disclosure-dl/docs/jpx_disclosure_design.md`）。
 - スマートプラグ（Tapo P110M）で毎日定時に電源投入・遮断。各サービスの日次ジョブは
   電源ON〜OFFの時間枠内で処理を終えシャットダウンする必要がある。
 - 実行方式はsystemdタイマーに統一（`OnCalendar`＋`Persistent=true`、`OnBootSec`は

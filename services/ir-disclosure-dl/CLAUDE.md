@@ -36,6 +36,13 @@ TDnet監視＋東証上場会社情報サービスからのPDF取得を担う`fi
 - **HTMLパースは正規表現のみ**: `beautifulsoup4`等は使わない。TDnet・東証上場
   会社情報サービスとも、対象箇所のHTML構造が固定的（クラス名・id命名規則が
   安定）なため、正規表現で十分と判断（依存を増やさない）。
+- **実行状況レポートのS3公開（任意、2026-09-27有効化決定）**: `jpx-daily-pdf-dl`
+  のバックフィル進捗レポートと同じ設計（`status_report.generate_report_html`で
+  生成したHTMLをS3へアップロードし、公開URLをSlack通知に含める）。`S3_BUCKET_NAME`
+  未設定なら丸ごとスキップされ、レイク本体はクラウドストレージを使わないという
+  レイヤ全体の方針（ルート`CLAUDE.md`）は維持される。バケット・キーは
+  `S3_BUCKET_NAME`環境変数（`ikuty-finance`を想定、他サービスと共有）・
+  `run_daily.S3_REPORT_KEY`（`"ir-disclosure-dl/run_report.html"`固定）。
 
 ## Mac Mini上のパス（実行基盤）
 
