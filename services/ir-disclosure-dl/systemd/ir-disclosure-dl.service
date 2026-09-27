@@ -1,0 +1,23 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdサービスユニットの例。
+# /etc/systemd/system/ir-disclosure-dl.service にコピーし、自分の環境の実際の
+# ユーザー名・パスに合わせて書き換えること。
+#
+# マシンのシャットダウンはこのunitでは行わない。共有unit（リポジトリ直下の
+# systemd/finance-lake-shutdown.service）が、全サービス共通で一手に引き受ける
+# （edinet-dl等と同じ設計）。
+#
+# 有効化・起動確認:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable ir-disclosure-dl.timer
+#   sudo systemctl start ir-disclosure-dl.timer
+#   systemctl list-timers ir-disclosure-dl.timer
+#   journalctl -u ir-disclosure-dl.service
+
+[Unit]
+Description=TDnet disclosure watch + JPX listed company info PDF fetch
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/finance-lake/services/ir-disclosure-dl/.env -v /home/<user>/finance-lake/data/ir-disclosure-dl:/data ir-disclosure-dl:latest

@@ -34,7 +34,7 @@
 
 [Unit]
 Description=Shut down the machine after all daily fetch jobs complete
-After=edinet-dl.service jpx-daily-pdf-dl.service mufg-corporate-actions.service finance-dwh-transform.service
+After=edinet-dl.service jpx-daily-pdf-dl.service mufg-corporate-actions.service ir-disclosure-dl.service finance-dwh-transform.service
 
 [Service]
 Type=oneshot

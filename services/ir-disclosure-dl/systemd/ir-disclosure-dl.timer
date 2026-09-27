@@ -1,0 +1,17 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdタイマーユニットの例。
+# /etc/systemd/system/ir-disclosure-dl.timer にコピーする
+# （ir-disclosure-dl.serviceと対で使う）。
+#
+# 既存の各サービスのOnCalendar（edinet-dl 04:01:30・jpx-daily-pdf-dl 04:01:00・
+# mufg-corporate-actions 04:01:40）の後、共有シャットダウン（04:02:00）の前という
+# 空き枠に配置する。
+
+[Unit]
+Description=Run ir-disclosure-dl daily fetch
+
+[Timer]
+OnCalendar=*-*-* 04:01:50 Asia/Tokyo
+Persistent=true
+
+[Install]
+WantedBy=timers.target
