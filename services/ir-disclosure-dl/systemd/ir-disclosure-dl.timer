@@ -2,15 +2,18 @@
 # /etc/systemd/system/ir-disclosure-dl.timer にコピーする
 # （ir-disclosure-dl.serviceと対で使う）。
 #
-# 既存の各サービスのOnCalendar（edinet-dl 04:01:30・jpx-daily-pdf-dl 04:01:00・
-# mufg-corporate-actions 04:01:40）の後、共有シャットダウン（04:02:00）の前という
-# 空き枠に配置する。
+# 既存の各サービスのOnCalendar（jpx-daily-pdf-dl 04:01:00・edinet-dl 04:01:30・
+# mufg-corporate-actions 04:01:40）の後、finance-dwh-transform（04:01:45、
+# finance-dwh側）より前に配置する（2026-09-27修正: 当初04:01:50としていたが、
+# これだとdwh-transformより後に発火してしまい、レイクの取得ジョブが当日ぶんを
+# 書き終える前にdwh側が読みに行く形になってしまう。edinet-dl/jpx-daily-pdf-dl
+# と同じ「dwh-transformより前」という制約に合わせる）。
 
 [Unit]
 Description=Run ir-disclosure-dl daily fetch
 
 [Timer]
-OnCalendar=*-*-* 04:01:50 Asia/Tokyo
+OnCalendar=*-*-* 04:01:42 Asia/Tokyo
 Persistent=true
 
 [Install]
