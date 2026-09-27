@@ -39,6 +39,15 @@ DISCLOSURE_KEYWORDS: dict[str, str] = {
     "業績予想の修正": "forecast_revision",
 }
 
+# "業績予想の修正"は連続する部分文字列としては一致しないタイトル表記が実在する
+# （実機確認、2026-09-27: 北海電力(95090)が同日に出した別の開示
+# 「業績予想(連結)の修正に関するお知らせ」は、"業績予想"と"の修正"の間に"(連結)"が
+# 挿入されており、連続文字列マッチでは見逃す）。そのためforecast_revisionのみ、
+# 両方の語が（連続していなくても）含まれていればよいという緩い判定にする。
+# 決算短信は同種の表記ゆれが実データ上見当たらなかったため、連続文字列マッチのまま
+# とする。
+_FORECAST_REVISION_REQUIRED_WORDS = ("業績予想", "修正")
+
 _ROW_PATTERN = re.compile(
     r'<td class="[^"]*kjTime[^"]*"[^>]*>\s*(?P<time>[^<]*?)\s*</td>\s*'
     r'<td class="[^"]*kjCode[^"]*"[^>]*>\s*(?P<code>[^<]*?)\s*</td>\s*'
@@ -96,9 +105,10 @@ def parse_list_page(html: bytes) -> list[RawTdnetRow]:
 
 
 def _match_disclosure_kind(title: str) -> str | None:
-    for keyword, kind in DISCLOSURE_KEYWORDS.items():
-        if keyword in title:
-            return kind
+    if "決算短信" in title:
+        return "kessan_tanshin"
+    if all(word in title for word in _FORECAST_REVISION_REQUIRED_WORDS):
+        return "forecast_revision"
     return None
 
 

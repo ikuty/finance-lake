@@ -61,6 +61,17 @@ def test_filter_and_match_selects_only_relevant_titles_and_known_companies(tmp_p
     assert kinds["67020"] == "forecast_revision"
 
 
+def test_match_disclosure_kind_catches_non_contiguous_forecast_revision_title() -> None:
+    # 実機確認済み(2026-09-27): 北海電力(95090)が実際に出した表題
+    # 「業績予想(連結)の修正に関するお知らせ」は"業績予想"と"の修正"の間に
+    # "(連結)"が挿入されており、連続文字列マッチ"業績予想の修正"では見逃す。
+    assert tdnet_client._match_disclosure_kind("業績予想(連結)の修正に関するお知らせ") == "forecast_revision"
+
+
+def test_match_disclosure_kind_returns_none_for_unrelated_title() -> None:
+    assert tdnet_client._match_disclosure_kind("代表取締役の異動に関するお知らせ") is None
+
+
 def test_filter_and_match_excludes_unknown_company(tmp_path: Path) -> None:
     conn = db.init_db(tmp_path / "test.db")
     # 極洋(13010)を登録しない = seedに無い銘柄として扱う

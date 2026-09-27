@@ -105,7 +105,16 @@ def parse_kessan_disclosures(html: str) -> list[JpxDisclosure]:
     return disclosures
 
 
-_DISCLOSURE_KIND_KEYWORDS = {"kessan_tanshin": "決算短信", "forecast_revision": "業績予想の修正"}
+def _title_matches_kind(title: str, disclosure_kind: str) -> bool:
+    """tdnet_client._match_disclosure_kind()と同じ判定基準（内容の一貫性のため）。
+    "業績予想の修正"は連続する部分文字列としては一致しないタイトル表記が実在する
+    （例:「業績予想(連結)の修正に関するお知らせ」、実機確認、2026-09-27）ため、
+    forecast_revisionのみ両方の語が含まれていればよい緩い判定にする。"""
+    if disclosure_kind == "kessan_tanshin":
+        return "決算短信" in title
+    if disclosure_kind == "forecast_revision":
+        return "業績予想" in title and "修正" in title
+    raise ValueError(f"未知のdisclosure_kind: {disclosure_kind}")
 
 
 def select_matching_disclosure(
@@ -115,13 +124,12 @@ def select_matching_disclosure(
     同じ種別のキーワードを含み、開示日がevent_dateに最も近い（前後max_days_diff日以内）
     ものを採用する。JPXの開示日はTDnetのevent_dateと通常一致するが、日付跨ぎ等の
     ずれを許容するため多少の幅を持たせる。"""
-    keyword = _DISCLOSURE_KIND_KEYWORDS[disclosure_kind]
     event_dt = datetime.date.fromisoformat(event_date)
 
     best: JpxDisclosure | None = None
     best_diff: int | None = None
     for d in disclosures:
-        if keyword not in d.title:
+        if not _title_matches_kind(d.title, disclosure_kind):
             continue
         try:
             d_dt = datetime.date(*(int(p) for p in d.disclosure_date.split("/")))

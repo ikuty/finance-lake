@@ -95,6 +95,13 @@ def test_select_matching_disclosure_returns_none_when_no_keyword_match() -> None
     assert match is None
 
 
+def test_title_matches_kind_catches_non_contiguous_forecast_revision_title() -> None:
+    # tdnet_clientと同じ理由（実機確認済み、2026-09-27）で緩い判定にしている。
+    assert jpx_disclosure_client._title_matches_kind(
+        "業績予想(連結)の修正に関するお知らせ", "forecast_revision"
+    ) is True
+
+
 def test_select_matching_disclosure_respects_max_days_diff() -> None:
     disclosures = jpx_disclosure_client.parse_kessan_disclosures(SAMPLE_HTML)
     match = jpx_disclosure_client.select_matching_disclosure(
