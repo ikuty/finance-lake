@@ -156,6 +156,11 @@ def process_pdf_downloads(
     pending = db.pending_tdnet_events(conn)
     logger.info(f"PDF取得対象: {len(pending)}件")
 
+    # 同一銘柄が同日に複数件の開示を出すケース（実機確認、2026-09-27:
+    # 北海電力(95090)が同日同種別で2件の別文書を提出）があるため、銘柄単位で
+    # グルーピングしてJPXページの取得を1回にまとめ、かつ既に他のイベントへ
+    # 割り当て済みのPDFを同じ銘柄内で二重に割り当てないようにする。
+    events_by_sec_code: dict[str, list[sqlite3.Row]] = {}
     for event in pending:
         row = conn.execute(
             "SELECT sec_code FROM companies WHERE edinet_code = ?", (event["edinet_code"],)
@@ -164,38 +169,52 @@ def process_pdf_downloads(
         if sec_code is None:
             logger.error(f"event_id={event['id']}: companiesにsec_codeが見つかりません")
             continue
+        events_by_sec_code.setdefault(sec_code, []).append(event)
 
+    for sec_code, events in events_by_sec_code.items():
         try:
             html = jpx_disclosure_client.fetch_company_page(client, sec_code)
             disclosures = jpx_disclosure_client.parse_kessan_disclosures(html)
-            match = jpx_disclosure_client.select_matching_disclosure(
-                disclosures, event["event_date"], event["disclosure_kind"]
-            )
-            if match is None:
-                db.record_pdf_download(
-                    conn, event["id"], None, None, "", "skipped",
-                    None, "JPX上場会社情報サービス側に対応する開示が見つかりませんでした",
-                )
-                stats.pdf_skipped += 1
-                continue
-
-            body = jpx_disclosure_client.download_pdf(client, match.pdf_url)
-            basename = match.pdf_url.rsplit("/", 1)[-1]
-            dest = date_hierarchy_dir(data_dir, event["event_date"]) / event["edinet_code"] / basename
-            save_atomic(dest, body)
-            db.record_pdf_download(
-                conn, event["id"], match.disclosure_date, match.title, match.pdf_url,
-                "downloaded", str(dest), None,
-            )
-            stats.pdf_downloaded += 1
         except Exception as e:
-            db.record_pdf_download(
-                conn, event["id"], None, None, "", "error", None, str(e),
-            )
-            stats.pdf_error += 1
-            logger.error(f"event_id={event['id']} {event['company_name']}: PDF取得失敗 ({e})")
-        finally:
+            for event in events:
+                db.record_pdf_download(conn, event["id"], None, None, "", "error", None, str(e))
+                stats.pdf_error += 1
+                logger.error(f"event_id={event['id']} {event['company_name']}: JPXページ取得失敗 ({e})")
             time.sleep(delay)
+            continue
+
+        used_pdf_urls: set[str] = set()
+        for event in events:
+            try:
+                match = jpx_disclosure_client.select_matching_disclosure(
+                    disclosures, event["event_date"], event["disclosure_kind"],
+                    event_title=event["title"], exclude_pdf_urls=used_pdf_urls,
+                )
+                if match is None:
+                    db.record_pdf_download(
+                        conn, event["id"], None, None, "", "skipped",
+                        None, "JPX上場会社情報サービス側に対応する開示が見つかりませんでした",
+                    )
+                    stats.pdf_skipped += 1
+                    continue
+
+                body = jpx_disclosure_client.download_pdf(client, match.pdf_url)
+                basename = match.pdf_url.rsplit("/", 1)[-1]
+                dest = date_hierarchy_dir(data_dir, event["event_date"]) / event["edinet_code"] / basename
+                save_atomic(dest, body)
+                db.record_pdf_download(
+                    conn, event["id"], match.disclosure_date, match.title, match.pdf_url,
+                    "downloaded", str(dest), None,
+                )
+                used_pdf_urls.add(match.pdf_url)
+                stats.pdf_downloaded += 1
+            except Exception as e:
+                db.record_pdf_download(
+                    conn, event["id"], None, None, "", "error", None, str(e),
+                )
+                stats.pdf_error += 1
+                logger.error(f"event_id={event['id']} {event['company_name']}: PDF取得失敗 ({e})")
+        time.sleep(delay)
 
 
 def build_slack_message(stats: RunStats) -> str:

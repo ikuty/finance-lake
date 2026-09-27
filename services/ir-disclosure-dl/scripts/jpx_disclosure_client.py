@@ -118,17 +118,33 @@ def _title_matches_kind(title: str, disclosure_kind: str) -> bool:
 
 
 def select_matching_disclosure(
-    disclosures: list[JpxDisclosure], event_date: str, disclosure_kind: str, max_days_diff: int = 3
+    disclosures: list[JpxDisclosure],
+    event_date: str,
+    disclosure_kind: str,
+    event_title: str | None = None,
+    max_days_diff: int = 3,
+    exclude_pdf_urls: set[str] | None = None,
 ) -> JpxDisclosure | None:
     """TDnetで検知したイベント(event_date, disclosure_kind)に対応するJPX側の開示を選ぶ。
-    同じ種別のキーワードを含み、開示日がevent_dateに最も近い（前後max_days_diff日以内）
-    ものを採用する。JPXの開示日はTDnetのevent_dateと通常一致するが、日付跨ぎ等の
-    ずれを許容するため多少の幅を持たせる。"""
-    event_dt = datetime.date.fromisoformat(event_date)
 
-    best: JpxDisclosure | None = None
-    best_diff: int | None = None
+    同一銘柄・同日・同種別のTDnet開示が複数存在するケース（実機確認、2026-09-27:
+    北海電力(95090)が同日16:00に「業績予想(連結)の修正に関するお知らせ」と
+    「2026年度 連結業績予想の修正について」という2件の別文書を出していた）では、
+    日付近似だけでは区別できず、異なるTDnetイベントが同じJPX側開示に誤って
+    紐付けられてしまう（実際に発生したバグ）。JPX側は通常TDnetと同一のタイトルを
+    そのまま掲載しているため、event_titleが渡された場合は完全一致するものを
+    最優先で採用する。完全一致が無い場合のみ、開示日がevent_dateに最も近い
+    （前後max_days_diff日以内）ものにフォールバックする。
+    exclude_pdf_urlsは、同一銘柄内で既に他のイベントに割り当て済みのPDFを
+    二重に割り当てないための安全弁（呼び出し側が同一銘柄の複数イベントを
+    処理する際に使う）。"""
+    event_dt = datetime.date.fromisoformat(event_date)
+    exclude = exclude_pdf_urls or set()
+
+    candidates: list[tuple[int, JpxDisclosure]] = []
     for d in disclosures:
+        if d.pdf_url in exclude:
+            continue
         if not _title_matches_kind(d.title, disclosure_kind):
             continue
         try:
@@ -138,10 +154,19 @@ def select_matching_disclosure(
         diff = abs((d_dt - event_dt).days)
         if diff > max_days_diff:
             continue
-        if best_diff is None or diff < best_diff:
-            best = d
-            best_diff = diff
-    return best
+        candidates.append((diff, d))
+
+    if not candidates:
+        return None
+
+    if event_title is not None:
+        exact = [(diff, d) for diff, d in candidates if d.title == event_title]
+        if exact:
+            exact.sort(key=lambda pair: pair[0])
+            return exact[0][1]
+
+    candidates.sort(key=lambda pair: pair[0])
+    return candidates[0][1]
 
 
 _PDF_MAGIC = b"%PDF"

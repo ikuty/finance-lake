@@ -110,6 +110,61 @@ def test_select_matching_disclosure_respects_max_days_diff() -> None:
     assert match is None
 
 
+# 実機確認済み(2026-09-27)のバグ再現用フィクスチャ: 北海電力(95090)が同日同時刻に
+# 「業績予想(連結)の修正に関するお知らせ」と「2026年度 連結業績予想の修正について」
+# という2件の別文書を提出しており、JPX側にも対応する2行が別々に存在する。
+# 日付近似のみで選ぶ旧ロジックでは両方が同じ1行（診断時は診断で先に見つかった方）に
+# 誤って紐付いてしまっていた。
+_HOKKAIDO_POWER_DISCLOSURES = [
+    jpx_disclosure_client.JpxDisclosure(
+        disclosure_date="2026/09/25",
+        title="2026年度 連結業績予想の修正について",
+        pdf_url="https://www2.jpx.co.jp/disc/95090/140120260916537243.pdf",
+    ),
+    jpx_disclosure_client.JpxDisclosure(
+        disclosure_date="2026/09/25",
+        title="業績予想(連結)の修正に関するお知らせ",
+        pdf_url="https://www2.jpx.co.jp/disc/95090/140120260916537214.pdf",
+    ),
+]
+
+
+def test_select_matching_disclosure_prefers_exact_title_match_over_closest_date() -> None:
+    match = jpx_disclosure_client.select_matching_disclosure(
+        _HOKKAIDO_POWER_DISCLOSURES,
+        "2026-09-25",
+        "forecast_revision",
+        event_title="業績予想(連結)の修正に関するお知らせ",
+    )
+    assert match is not None
+    assert match.pdf_url.endswith("537214.pdf")
+
+
+def test_select_matching_disclosure_prefers_exact_title_match_for_other_event_too() -> None:
+    match = jpx_disclosure_client.select_matching_disclosure(
+        _HOKKAIDO_POWER_DISCLOSURES,
+        "2026-09-25",
+        "forecast_revision",
+        event_title="2026年度 連結業績予想の修正について",
+    )
+    assert match is not None
+    assert match.pdf_url.endswith("537243.pdf")
+
+
+def test_select_matching_disclosure_excludes_already_assigned_pdf_urls() -> None:
+    # event_titleが無い（または一致しない）場合でも、既に他のイベントに割り当て
+    # 済みのPDFは除外され、同じPDFが二重に選ばれないようにする安全弁。
+    used = {"https://www2.jpx.co.jp/disc/95090/140120260916537243.pdf"}
+    match = jpx_disclosure_client.select_matching_disclosure(
+        _HOKKAIDO_POWER_DISCLOSURES,
+        "2026-09-25",
+        "forecast_revision",
+        exclude_pdf_urls=used,
+    )
+    assert match is not None
+    assert match.pdf_url.endswith("537214.pdf")
+
+
 class _FakeClient:
     def __init__(self, page_body: bytes) -> None:
         self._page_body = page_body
