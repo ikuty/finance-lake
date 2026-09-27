@@ -10,6 +10,7 @@
 | [`services/edinet-dl`](./services/edinet-dl) | EDINET（金融庁の電子開示システム）から書類ファイルを取得・保存する |
 | [`services/jpx-daily-pdf-dl`](./services/jpx-daily-pdf-dl) | 日本取引所グループ（JPX）の日次株式相場表PDFを取得・保存する（個人利用限定） |
 | [`services/mufg-corporate-actions`](./services/mufg-corporate-actions) | 三菱UFJ eスマート証券（kabu.com）の株式分割・株式併合・商号変更ページを取得・保存する（個人利用限定） |
+| [`services/ir-disclosure-dl`](./services/ir-disclosure-dl) | TDnetを監視し、決算短信・業績予想の修正を検知して東証上場会社情報サービスからPDFを取得・保存する |
 
 ## 実行基盤
 
