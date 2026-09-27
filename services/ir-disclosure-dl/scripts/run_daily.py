@@ -122,6 +122,27 @@ def save_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp_path, path)
 
 
+def build_pdf_metadata(
+    event: sqlite3.Row, sec_code: str, match: jpx_disclosure_client.JpxDisclosure
+) -> dict[str, str]:
+    """PDFと同じ場所に置くメタデータJSONの中身を組み立てる。edinet-dlの
+    document_list.jsonと同じ理由（PDFのファイル名だけでは銘柄・開示種別が
+    分からず、後段がこのサービス固有のSQLite進捗DBを読む設計にもしたくない
+    ため、レイクのファイルをglobするだけで判別できるようにする）。"""
+    return {
+        "edinet_code": event["edinet_code"],
+        "sec_code": sec_code,
+        "company_name": event["company_name"],
+        "disclosure_kind": event["disclosure_kind"],
+        "tdnet_event_date": event["event_date"],
+        "tdnet_kj_time": event["kj_time"],
+        "tdnet_title": event["title"],
+        "jpx_disclosure_date": match.disclosure_date,
+        "jpx_title": match.title,
+        "pdf_url": match.pdf_url,
+    }
+
+
 def process_tdnet_watch(
     conn: sqlite3.Connection,
     client: tdnet_client.HttpClientLike,
@@ -202,6 +223,11 @@ def process_pdf_downloads(
                 basename = match.pdf_url.rsplit("/", 1)[-1]
                 dest = date_hierarchy_dir(data_dir, event["event_date"]) / event["edinet_code"] / basename
                 save_atomic(dest, body)
+
+                metadata = build_pdf_metadata(event, sec_code, match)
+                metadata_json = json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8")
+                save_atomic(dest.with_suffix(".json"), metadata_json)
+
                 db.record_pdf_download(
                     conn, event["id"], match.disclosure_date, match.title, match.pdf_url,
                     "downloaded", str(dest), None,

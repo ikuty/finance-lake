@@ -63,10 +63,32 @@ Struts系のdispatchパターン（`<input type="hidden" name="X" value="X" disa
 抽出する。このPDF URLは認証・セッション不要で直接ダウンロード可能（スクリプトから
 の機械的アクセスでもボット判定なし、実機確認済み）。
 
-TDnetで検知したイベント(event_date, disclosure_kind)に対応する行は、同じ種別の
-キーワード（"決算短信"／"業績予想の修正"）を含み、開示日が最も近い（前後3日以内）
-ものを採用する。JPXの開示日は通常TDnetのevent_dateと一致するが、日付跨ぎ等の
-ずれを許容するため多少の幅を持たせている。
+TDnetで検知したイベント(event_date, disclosure_kind)に対応する行は、まずTDnetの
+表題と完全一致するものを優先して採用する（JPXは通常TDnetと同一の表題をそのまま
+掲載しているため）。完全一致が無い場合のみ、同じ種別のキーワード（"決算短信"／
+"業績予想の修正"）を含み、開示日が最も近い（前後3日以内）ものにフォールバックする。
+
+同一銘柄が同日・同種別で複数件の開示を出すケース（実機確認、2026-09-27: 北海電力
+(95090)が同日同時刻に「業績予想(連結)の修正に関するお知らせ」と「2026年度 連結
+業績予想の修正について」という2件の別文書を提出）では、日付近似だけでは区別でき
+ず、当初は異なるTDnetイベントが同じJPX側PDFに誤って紐付くバグがあった。表題の
+完全一致判定と、同一銘柄内で既に他イベントへ割り当て済みのPDFを除外する仕組み
+（`jpx_disclosure_client.select_matching_disclosure`の`exclude_pdf_urls`）で修正
+した。
+
+## レイクへの格納・メタデータJSON（2026-09-27追加）
+
+PDF本体は`{DATA_DIR}/{yyyy}/{mm}/{dd}/{edinet_code}/{JPX側の文書ID}.pdf`に保存する
+（`edinet-dl`等と同じ、日付3階層＋`edinet_code`のレイク配置規約）。
+
+PDFのファイル名はJPX側の内部文書IDであり、それだけではどの銘柄・どの開示種別
+（決算短信／業績予想の修正）のPDFかを判別できない。後段（`finance-dwh`）はこの
+サービスのSQLite進捗DB（`ir_disclosure.db`）を読まない設計（レイク層のファイルを
+globするだけで完結させる、`edinet-dl`の`document_list.json`と同じ理由）のため、
+PDFと同じ場所に同名の軽量メタデータJSON（`{同じ文書ID}.json`）を一緒に着地させる
+（`run_daily.build_pdf_metadata`）。内容: `edinet_code`・`sec_code`・
+`company_name`・`disclosure_kind`・`tdnet_event_date`・`tdnet_kj_time`・
+`tdnet_title`・`jpx_disclosure_date`・`jpx_title`・`pdf_url`。
 
 ## 既知のリスク
 

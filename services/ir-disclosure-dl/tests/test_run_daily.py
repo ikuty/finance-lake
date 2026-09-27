@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import sys
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import db  # noqa: E402
+import jpx_disclosure_client  # noqa: E402
 import run_daily  # noqa: E402
 import tdnet_client  # noqa: E402
 
@@ -76,3 +79,67 @@ def test_process_tdnet_watch_records_failure_and_continues(tmp_path: Path, monke
 
     assert stats.tdnet_days_processed == ["2026-08-07"]
     assert "2026-08-06" in stats.tdnet_days_failed
+
+
+_JPX_HTML = """
+<tr id="1101_0">
+    <td align="center">2026/09/25</td>
+    <td >
+        <div class="txtLink2">
+            <div class="txtLink2_InnerDiv">
+                <a href="/disc/95090/140120260916537214.pdf" target="linkWin9_1">
+                    業績予想(連結)の修正に関するお知らせ
+                </a>
+            </div>
+        </div>
+    </td>
+</tr>
+"""
+
+
+class _FakeJpxClient:
+    def get(self, url: str) -> bytes:
+        return b""
+
+    def post_form(self, url: str, fields: dict[str, str], referer: str | None = None) -> bytes:
+        return _JPX_HTML.encode("utf-8")
+
+
+def test_process_pdf_downloads_writes_pdf_and_sidecar_metadata_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = db.init_db(tmp_path / "test.db")
+    db.upsert_company(conn, "E04500", "95090", "9509", "北海電力")
+    db.insert_tdnet_event(
+        conn, "2026-09-25", "16:00", "95090", "E04500", "北海電力",
+        "業績予想(連結)の修正に関するお知らせ", "forecast_revision",
+    )
+    conn.commit()
+
+    monkeypatch.setattr(
+        jpx_disclosure_client, "download_pdf", lambda client, url: b"%PDF-fake"
+    )
+
+    data_dir = tmp_path / "raw"
+    stats = run_daily.RunStats()
+    logger = logging.getLogger("test")
+    run_daily.process_pdf_downloads(conn, _FakeJpxClient(), data_dir, 0.0, stats, logger)
+
+    assert stats.pdf_downloaded == 1
+    pdf_path = data_dir / "2026" / "09" / "25" / "E04500" / "140120260916537214.pdf"
+    json_path = pdf_path.with_suffix(".json")
+    assert pdf_path.read_bytes() == b"%PDF-fake"
+
+    metadata = json.loads(json_path.read_text(encoding="utf-8"))
+    assert metadata == {
+        "edinet_code": "E04500",
+        "sec_code": "95090",
+        "company_name": "北海電力",
+        "disclosure_kind": "forecast_revision",
+        "tdnet_event_date": "2026-09-25",
+        "tdnet_kj_time": "16:00",
+        "tdnet_title": "業績予想(連結)の修正に関するお知らせ",
+        "jpx_disclosure_date": "2026/09/25",
+        "jpx_title": "業績予想(連結)の修正に関するお知らせ",
+        "pdf_url": "https://www2.jpx.co.jp/disc/95090/140120260916537214.pdf",
+    }
