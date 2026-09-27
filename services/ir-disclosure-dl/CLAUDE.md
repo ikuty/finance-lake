@@ -50,7 +50,13 @@ TDnet監視＋東証上場会社情報サービスからのPDF取得を担う`fi
 - データ（進捗DB・PDF本体）: `/home/ikuty/finance-lake/data/ir-disclosure-dl/`
   （コンテナには`/data`としてbind mount）
 - systemd unit: `/etc/systemd/system/ir-disclosure-dl.service`・`.timer`
-  （`OnCalendar=*-*-* 04:01:50 Asia/Tokyo`、既存サービスの空き枠）
+  （`OnCalendar=*-*-* 04:01:42 Asia/Tokyo`。mufg-corporate-actions(04:01:40)より後、
+  finance-dwh-transform(04:01:45、finance-dwh側)より前に配置。当初04:01:50として
+  いたが、dwh-transformより後に発火してしまう不具合に気づき2026-09-27修正した。
+  なお現時点ではfinance-dwh側にir-disclosure-dlのデータを読むモデルが無いため
+  実害は無いが、将来モデル追加時は`finance-dwh-transform.service`の`After=`に
+  `ir-disclosure-dl.service`を追加する必要がある（finance-dwh側の変更、このリポジトリ
+  の変更のみでは完結しない））
 - Dockerイメージ: `ghcr.io/ikuty/ir-disclosure-dl:latest`
 
 ## 実装言語の選定理由
