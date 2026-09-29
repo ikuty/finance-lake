@@ -33,6 +33,14 @@ def generate_report_html(db_path: Path) -> tuple[str, str]:
         "SELECT status, COUNT(*) AS n FROM pdf_downloads GROUP BY status"
     ).fetchall()
 
+    # pdf_downloadsに行がまだ無いイベント = JPX側に未掲載等で再試行待ち
+    # （run_daily.MAX_PENDING_RETRY_DAYSを超えるまでは意図的にDBへ記録しない設計、
+    # 詳細はrun_daily.pyのコメント参照）。
+    pending_retry_count = conn.execute("""
+        SELECT COUNT(*) AS n FROM tdnet_events e
+        WHERE NOT EXISTS (SELECT 1 FROM pdf_downloads d WHERE d.tdnet_event_id = e.id)
+    """).fetchone()["n"]
+
     recent_errors = conn.execute("""
         SELECT e.company_name, e.title, e.event_date, d.pdf_url, d.message
         FROM pdf_downloads d JOIN tdnet_events e ON e.id = d.tdnet_event_id
@@ -62,6 +70,7 @@ def generate_report_html(db_path: Path) -> tuple[str, str]:
     html_parts.append("<table><tr><th>状態</th><th>件数</th></tr>")
     for row in status_counts:
         html_parts.append(f"<tr><td>{row['status']}</td><td>{row['n']}</td></tr>")
+    html_parts.append(f"<tr><td>pending（再試行待ち）</td><td>{pending_retry_count}</td></tr>")
     html_parts.append("</table>")
 
     html_parts.append(f"<h2>直近の取得失敗（最大50件）</h2>")
@@ -80,6 +89,7 @@ def generate_report_html(db_path: Path) -> tuple[str, str]:
 
     summary = (
         f"検知イベント{total_events}件 / "
-        f"PDF取得 {dict((r['status'], r['n']) for r in status_counts)}"
+        f"PDF取得 {dict((r['status'], r['n']) for r in status_counts)} / "
+        f"再試行待ち{pending_retry_count}件"
     )
     return html, summary

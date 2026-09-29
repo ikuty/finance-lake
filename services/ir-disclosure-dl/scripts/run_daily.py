@@ -75,6 +75,22 @@ class RunStats:
     pdf_downloaded: int = 0
     pdf_skipped: int = 0
     pdf_error: int = 0
+    pdf_pending_retry: int = 0
+
+
+# JPX上場会社情報サービスへの掲載がTDnetの開示から1日以上遅れるケースが実機確認済み
+# （2026-09-29）。この日数を超えてもJPX側に対応する開示が見つからない/取得できない
+# 場合のみ、最終的にskipped/errorとして確定記録し、再試行対象から外す。それより短い
+# 間は意図的にDBへ何も記録しない（record_pdf_downloadを呼ばない）ことで、
+# db.pending_tdnet_eventsが「pdf_downloadsに行が無いイベント」を対象にする既存の
+# 仕組みにそのまま乗せ、翌日以降のprocess_pdf_downloadsで自動的に再試行させる。
+MAX_PENDING_RETRY_DAYS = 7
+
+
+def _should_give_up(event: sqlite3.Row) -> bool:
+    event_date = datetime.date.fromisoformat(event["event_date"])
+    age_days = (tdnet_client.today_jst() - event_date).days
+    return age_days >= MAX_PENDING_RETRY_DAYS
 
 
 def setup_logger(log_path: str) -> logging.Logger:
@@ -198,9 +214,18 @@ def process_pdf_downloads(
             disclosures = jpx_disclosure_client.parse_kessan_disclosures(html)
         except Exception as e:
             for event in events:
-                db.record_pdf_download(conn, event["id"], None, None, "", "error", None, str(e))
-                stats.pdf_error += 1
-                logger.error(f"event_id={event['id']} {event['company_name']}: JPXページ取得失敗 ({e})")
+                if _should_give_up(event):
+                    db.record_pdf_download(conn, event["id"], None, None, "", "error", None, str(e))
+                    stats.pdf_error += 1
+                    logger.error(
+                        f"event_id={event['id']} {event['company_name']}: "
+                        f"JPXページ取得失敗、再試行上限({MAX_PENDING_RETRY_DAYS}日)に達したため確定 ({e})"
+                    )
+                else:
+                    stats.pdf_pending_retry += 1
+                    logger.warning(
+                        f"event_id={event['id']} {event['company_name']}: JPXページ取得失敗、翌日再試行 ({e})"
+                    )
             time.sleep(delay)
             continue
 
@@ -212,11 +237,19 @@ def process_pdf_downloads(
                     event_title=event["title"], exclude_pdf_urls=used_pdf_urls,
                 )
                 if match is None:
-                    db.record_pdf_download(
-                        conn, event["id"], None, None, "", "skipped",
-                        None, "JPX上場会社情報サービス側に対応する開示が見つかりませんでした",
-                    )
-                    stats.pdf_skipped += 1
+                    if _should_give_up(event):
+                        db.record_pdf_download(
+                            conn, event["id"], None, None, "", "skipped", None,
+                            f"JPX上場会社情報サービス側に対応する開示が見つからないまま"
+                            f"{MAX_PENDING_RETRY_DAYS}日経過したため確定",
+                        )
+                        stats.pdf_skipped += 1
+                    else:
+                        stats.pdf_pending_retry += 1
+                        logger.info(
+                            f"event_id={event['id']} {event['company_name']}: "
+                            "JPX上場会社情報サービス側に未掲載、翌日再試行"
+                        )
                     continue
 
                 body = jpx_disclosure_client.download_pdf(client, match.pdf_url)
@@ -235,11 +268,20 @@ def process_pdf_downloads(
                 used_pdf_urls.add(match.pdf_url)
                 stats.pdf_downloaded += 1
             except Exception as e:
-                db.record_pdf_download(
-                    conn, event["id"], None, None, "", "error", None, str(e),
-                )
-                stats.pdf_error += 1
-                logger.error(f"event_id={event['id']} {event['company_name']}: PDF取得失敗 ({e})")
+                if _should_give_up(event):
+                    db.record_pdf_download(
+                        conn, event["id"], None, None, "", "error", None, str(e),
+                    )
+                    stats.pdf_error += 1
+                    logger.error(
+                        f"event_id={event['id']} {event['company_name']}: "
+                        f"PDF取得失敗、再試行上限({MAX_PENDING_RETRY_DAYS}日)に達したため確定 ({e})"
+                    )
+                else:
+                    stats.pdf_pending_retry += 1
+                    logger.warning(
+                        f"event_id={event['id']} {event['company_name']}: PDF取得失敗、翌日再試行 ({e})"
+                    )
         time.sleep(delay)
 
 
@@ -251,7 +293,8 @@ def build_slack_message(stats: RunStats) -> str:
             lines.append(f"TDnet失敗: {date_str} ({message})")
     lines.append(f"TDnet処理日数: {len(stats.tdnet_days_processed)}日 / 新規検知: {stats.new_events}件")
     lines.append(
-        f"PDF取得: 成功{stats.pdf_downloaded}件 / 未一致{stats.pdf_skipped}件 / 失敗{stats.pdf_error}件"
+        f"PDF取得: 成功{stats.pdf_downloaded}件 / 未一致(確定){stats.pdf_skipped}件 / "
+        f"失敗(確定){stats.pdf_error}件 / 再試行待ち{stats.pdf_pending_retry}件"
     )
     return "\n".join(lines)
 
