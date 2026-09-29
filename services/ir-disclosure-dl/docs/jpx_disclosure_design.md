@@ -76,6 +76,26 @@ TDnetで検知したイベント(event_date, disclosure_kind)に対応する行�
 （`jpx_disclosure_client.select_matching_disclosure`の`exclude_pdf_urls`）で修正
 した。
 
+## JPX側掲載の遅延と再試行設計（2026-09-29追加）
+
+JPX上場会社情報サービスへの掲載は、TDnetでの当日開示から1日以上遅れることがある
+（実機確認、2026-09-29）。当初の実装は、PDF取得を試みた時点でJPX側に対応する
+開示が見つからない場合、即座に`pdf_downloads`へ`status='skipped'`として確定記録
+していた。`db.pending_tdnet_events`は「`pdf_downloads`に行が無いイベント」だけを
+再試行対象とする設計のため、この確定記録により当該イベントは二度と再試行され
+ず、JPX側が翌日以降に掲載しても永久に取得漏れとなるバグがあった（JPXページ取得
+自体が一時的なネットワークエラーで失敗した場合の`status='error'`確定記録も同様の
+問題を抱えていた）。
+
+対応として、`run_daily.MAX_PENDING_RETRY_DAYS`（既定7日）を超えるまでは、
+マッチ不成立・JPXページ取得失敗・PDFダウンロード失敗のいずれについても
+`pdf_downloads`へ何も記録しない（`db.record_pdf_download`を呼ばない）ように
+変更した。これにより`db.pending_tdnet_events`の既存の仕組みにそのまま乗り、
+翌日以降のジョブ実行で自動的に再試行される。猶予日数を超えても解決しない場合の
+み、最終的に`skipped`／`error`として確定記録し、再試行対象から外す。件数は
+`RunStats.pdf_pending_retry`（Slack通知の「再試行待ち」）・`status_report.py`の
+「pending（再試行待ち）」行で可視化する。
+
 ## レイクへの格納・メタデータJSON（2026-09-27追加）
 
 PDF本体は`{DATA_DIR}/{yyyy}/{mm}/{dd}/{edinet_code}/{JPX側の文書ID}.pdf`に保存する

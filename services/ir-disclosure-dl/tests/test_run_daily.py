@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -143,3 +144,93 @@ def test_process_pdf_downloads_writes_pdf_and_sidecar_metadata_json(
         "jpx_title": "業績予想(連結)の修正に関するお知らせ",
         "pdf_url": "https://www2.jpx.co.jp/disc/95090/140120260916537214.pdf",
     }
+
+
+class _FakeJpxClientNoMatch:
+    """JPX上場会社情報サービス側にまだ対応する開示が掲載されていない状況を模す
+    （実機確認、2026-09-29: TDnetの当日開示がJPX側では翌日以降に反映されるケース
+    がある）。"""
+
+    def get(self, url: str) -> bytes:
+        return b""
+
+    def post_form(self, url: str, fields: dict[str, str], referer: str | None = None) -> bytes:
+        return b"<html>no matching row here</html>"
+
+
+def _insert_forecast_revision_event(conn: sqlite3.Connection, event_date: str) -> None:
+    db.upsert_company(conn, "E04500", "95090", "9509", "北海電力")
+    db.insert_tdnet_event(
+        conn, event_date, "16:00", "95090", "E04500", "北海電力",
+        "業績予想(連結)の修正に関するお知らせ", "forecast_revision",
+    )
+    conn.commit()
+
+
+def test_process_pdf_downloads_leaves_event_pending_when_jpx_has_no_match_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import datetime
+
+    conn = db.init_db(tmp_path / "test.db")
+    _insert_forecast_revision_event(conn, "2026-09-28")
+    monkeypatch.setattr(tdnet_client, "today_jst", lambda: datetime.date(2026, 9, 29))
+
+    stats = run_daily.RunStats()
+    logger = logging.getLogger("test")
+    run_daily.process_pdf_downloads(
+        conn, _FakeJpxClientNoMatch(), tmp_path / "raw", 0.0, stats, logger
+    )
+
+    assert stats.pdf_pending_retry == 1
+    assert stats.pdf_skipped == 0
+    # まだpdf_downloadsに行が無い = 翌日以降も再試行対象のまま
+    assert len(db.pending_tdnet_events(conn)) == 1
+
+
+def test_process_pdf_downloads_gives_up_after_retry_window_when_no_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import datetime
+
+    conn = db.init_db(tmp_path / "test.db")
+    _insert_forecast_revision_event(conn, "2026-09-20")
+    monkeypatch.setattr(tdnet_client, "today_jst", lambda: datetime.date(2026, 9, 29))
+
+    stats = run_daily.RunStats()
+    logger = logging.getLogger("test")
+    run_daily.process_pdf_downloads(
+        conn, _FakeJpxClientNoMatch(), tmp_path / "raw", 0.0, stats, logger
+    )
+
+    assert stats.pdf_pending_retry == 0
+    assert stats.pdf_skipped == 1
+    assert len(db.pending_tdnet_events(conn)) == 0
+
+
+class _FakeJpxClientFetchFails:
+    def get(self, url: str) -> bytes:
+        return b""
+
+    def post_form(self, url: str, fields: dict[str, str], referer: str | None = None) -> bytes:
+        raise RuntimeError("接続エラー")
+
+
+def test_process_pdf_downloads_leaves_event_pending_on_jpx_fetch_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import datetime
+
+    conn = db.init_db(tmp_path / "test.db")
+    _insert_forecast_revision_event(conn, "2026-09-28")
+    monkeypatch.setattr(tdnet_client, "today_jst", lambda: datetime.date(2026, 9, 29))
+
+    stats = run_daily.RunStats()
+    logger = logging.getLogger("test")
+    run_daily.process_pdf_downloads(
+        conn, _FakeJpxClientFetchFails(), tmp_path / "raw", 0.0, stats, logger
+    )
+
+    assert stats.pdf_pending_retry == 1
+    assert stats.pdf_error == 0
+    assert len(db.pending_tdnet_events(conn)) == 1

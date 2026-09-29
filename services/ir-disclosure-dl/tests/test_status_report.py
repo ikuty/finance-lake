@@ -27,6 +27,21 @@ def test_generate_report_html_includes_key_sections(tmp_path: Path) -> None:
     assert "検知イベント" in summary
 
 
+def test_generate_report_html_counts_pending_retry(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = db.init_db(db_path)
+    db.upsert_company(conn, "E00012", "13010", "1301", "極洋")
+    conn.commit()
+    # pdf_downloadsに行を作らない = 再試行待ち（run_daily.MAX_PENDING_RETRY_DAYS参照）
+    event_id = db.insert_tdnet_event(conn, "2026-08-07", "15:00", "13010", "E00012", "極洋", "決算短信", "kessan_tanshin")
+    assert event_id is not None
+
+    html, summary = status_report.generate_report_html(db_path)
+
+    assert "pending（再試行待ち）" in html
+    assert "再試行待ち1件" in summary
+
+
 def test_generate_report_html_lists_recent_errors(tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
     conn = db.init_db(db_path)

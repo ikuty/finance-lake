@@ -43,6 +43,13 @@ TDnet監視＋東証上場会社情報サービスからのPDF取得を担う`fi
   レイヤ全体の方針（ルート`CLAUDE.md`）は維持される。バケット・キーは
   `S3_BUCKET_NAME`環境変数（`ikuty-finance`を想定、他サービスと共有）・
   `run_daily.S3_REPORT_KEY`（`"ir-disclosure-dl/run_report.html"`固定）。
+- **JPX側掲載の遅延に対する再試行設計（2026-09-29修正）**: JPX上場会社情報サービス
+  への掲載はTDnetの当日開示から1日以上遅れることがある。マッチ不成立・JPXページ
+  取得失敗等を即座に`pdf_downloads`へ確定記録すると、`db.pending_tdnet_events`の
+  対象から外れ二度と再試行されなくなる恒久的な取得漏れバグがあった。
+  `run_daily.MAX_PENDING_RETRY_DAYS`（既定7日）を超えるまでは意図的にDBへ記録
+  せず、翌日以降の実行で自動再試行させるよう修正した。詳細は`docs/
+  jpx_disclosure_design.md`「JPX側掲載の遅延と再試行設計」参照。
 
 ## Mac Mini上のパス（実行基盤）
 
@@ -64,8 +71,11 @@ TDnet監視＋東証上場会社情報サービスからのPDF取得を担う`fi
 Python 3.12（stdlib中心、`boto3`のみ例外）。他のレイク層サービスと同じ判断
 （`edinet-dl`のCLAUDE.md参照）。
 
+## 現状（2026-09-29時点）
+
+- Mac Miniへの実デプロイ・systemdタイマー組み込み済み。日次ジョブが稼働中。
+
 ## 次にやること（未着手）
 
-- Mac Miniへの実デプロイ・systemdタイマー組み込み
-- 実運用でのmanual_review相当（JPX側に対応する開示が見つからないケース）の
-  発生率の観察
+- 実運用での再試行待ち（`status_report.py`の「pending（再試行待ち）」）・
+  最終`skipped`／`error`確定の発生率の観察
