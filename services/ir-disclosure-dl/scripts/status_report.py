@@ -3,11 +3,14 @@ generate_report_html(db_path) -> (html, summary)という型。日次実行の�
 アップロードする運用も同じ）。
 
 TDnet取得状況は、edinet-dlのbackfill_report.pyと同じ年月×日のグリッド形式で表示する
-（render_progress_grid、2026-09-30追加）。ただしedinet-dlと異なり、ir-disclosure-dlには
-過去分の遡及バックフィル計画が無い（TDnet過去分の遡及取得は行わず、必要になった時点で
-JPX上場会社情報サービス側の121ヶ月履歴を使う方針、docs/jpx_disclosure_design.md参照）。
-そのためグリッドの起点はedinet-dlのような「初回バックフィル開始日」ではなく、単純な
-SERVICE_START_DATE（Mac Miniへの実デプロイ日）とする。
+（render_progress_grid、2026-09-30追加）。
+
+当初はir-disclosure-dlに過去分の遡及バックフィル計画が無い前提で、グリッドの起点を
+Mac Miniへの実デプロイ日（2026-09-27）としていたが、EDINETの実測フィリングラグ
+（有報: 期末後の中央値85日・p90=89日、半期報告書: 中央値44日）を踏まえ、ラグの
+空白期間を確実にカバーするため直近90日分を遡及バックフィルした（2026-09-30実施）。
+これによりedinet-dlのEARLIEST_DATEと同じ「実際にバックフィル済みの最古日」という
+意味に変わったため、定数名もEARLIEST_DATEに統一する。
 """
 from __future__ import annotations
 
@@ -16,10 +19,10 @@ import sqlite3
 from collections.abc import Set as AbstractSet
 from pathlib import Path
 
-# サービス稼働開始日（2026-09-27、Mac Miniへの実デプロイ日。2026-09-30決定）。
-# edinet-dlのEARLIEST_DATEと違い「遡及バックフィルの開始日」ではなく、単に
-# このサービスが動き始めた日（それより前はtdnet_fetch_progressに行が存在しない）。
-SERVICE_START_DATE = datetime.date(2026, 9, 27)
+# 遡及バックフィル済みの最古日（2026-07-02、2026-09-30に直近90日分をバックフィル
+# した際の起点。edinet-dlのEARLIEST_DATEと同じ意味）。それより前はtdnet_fetch_progress
+# に行が存在しない。
+EARLIEST_DATE = datetime.date(2026, 7, 2)
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -103,7 +106,7 @@ def generate_report_html(db_path: Path) -> tuple[str, str]:
     conn.row_factory = sqlite3.Row
 
     grid_end = last_complete_day_jst()
-    grid_dates = progress_dates(SERVICE_START_DATE, grid_end)
+    grid_dates = progress_dates(EARLIEST_DATE, grid_end)
     grid_done = load_progress_dates_by_status(conn, "done")
     grid_error = load_progress_dates_by_status(conn, "error")
     grid_table = render_progress_grid(grid_dates, grid_done, grid_error)
@@ -138,7 +141,7 @@ def generate_report_html(db_path: Path) -> tuple[str, str]:
     html_parts.append("<h1>ir-disclosure-dl 実行状況</h1>")
 
     html_parts.append(
-        f"<h2>TDnet取得状況（{SERVICE_START_DATE.isoformat()}〜{grid_end.isoformat()}）</h2>"
+        f"<h2>TDnet取得状況（{EARLIEST_DATE.isoformat()}〜{grid_end.isoformat()}）</h2>"
     )
     html_parts.append(
         f"<div>完了: {grid_done_count} / {len(grid_dates)} 日"
