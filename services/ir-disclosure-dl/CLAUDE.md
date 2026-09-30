@@ -50,6 +50,16 @@ TDnet監視＋東証上場会社情報サービスからのPDF取得を担う`fi
   `run_daily.MAX_PENDING_RETRY_DAYS`（既定7日）を超えるまでは意図的にDBへ記録
   せず、翌日以降の実行で自動再試行させるよう修正した。詳細は`docs/
   jpx_disclosure_design.md`「JPX側掲載の遅延と再試行設計」参照。
+- **実行状況グリッド・遡及バックフィル90日分（2026-09-30実施）**: `status_report.py`
+  にedinet-dlの`backfill_report.py`と同じ年月×日グリッドを追加。グリッドの起点は
+  当初サービス稼働開始日（2026-09-27）としていたが、EDINETの実測フィリングラグ
+  （`mart__jpx_edinet__disclosed_fundamentals`実データ: 有報は期末後中央値85日・
+  p90=89日、半期報告書は中央値44日。2024年4月の制度改正で四半期報告書のEDINET
+  提出自体が廃止されており、Q1/Q3はEDINETに一切データが無くir-disclosure-dlが
+  唯一の情報源）を踏まえ、有報の空白期間を確実にカバーするため直近90日分
+  （2026-07-02〜）を遡及バックフィルした。これにより`status_report.EARLIEST_DATE`
+  は「実際にバックフィル済みの最古日」という、edinet-dlの`EARLIEST_DATE`と同じ
+  意味に変わっている（旧名`SERVICE_START_DATE`から改名）。
 
 ## Mac Mini上のパス（実行基盤）
 
