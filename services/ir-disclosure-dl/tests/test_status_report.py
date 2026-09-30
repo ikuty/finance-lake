@@ -15,7 +15,7 @@ def test_generate_report_html_includes_key_sections(tmp_path: Path) -> None:
     conn = db.init_db(db_path)
     db.upsert_company(conn, "E00012", "13010", "1301", "極洋")
     conn.commit()
-    event_date = status_report.SERVICE_START_DATE.isoformat()
+    event_date = status_report.EARLIEST_DATE.isoformat()
     db.store_tdnet_progress(conn, event_date, "done", 1, None)
     event_id = db.insert_tdnet_event(conn, event_date, "15:00", "13010", "E00012", "極洋", "決算短信", "kessan_tanshin")
     assert event_id is not None
