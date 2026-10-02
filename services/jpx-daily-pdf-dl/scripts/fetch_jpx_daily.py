@@ -9,7 +9,12 @@
 「サービス本体と使い捨てスクリプトの切り分け」参照）。
 
   - 形式C（詳細日次、直近13ヶ月程度のローリングウィンドウ）:
-    index.html・00-archives-01ページから日付->URLを解決して取得する。
+    対象期間にまたがる年月ごとに月次API（tsedaily_report_{YYYYMM}.json、
+    2026-08以前はtsedaily_report_{YYYYMM}.html）から日付->URLを解決して取得する。
+    JPXが2026-09-18前後にページ構造を変更し（index.html・00-archives-NN.htmlが
+    JavaScript+JSON APIでの描画に変わり静的リンクが無くなった）、この方式に
+    切り替えた（実機確認、2026-10-02。詳細はdocs/file_download_design.md
+    「ページ構造変更（2026-09-18前後）への対応」参照）。
   - 形式B（月次簡易OHLC）のうち03.htmlに現在列挙されている月:
     03.htmlは「当年進行中の月」ではなく、確定済みアーカイブへの移行がまだ済んで
     いない月を示すページ（実機確認、2026-09-05）。列挙されている中で最新の月は
@@ -81,8 +86,6 @@ LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB
 LOG_BACKUP_COUNT = 5
 
 BASE_HOST = "www.jpx.co.jp"
-DAILY_INDEX_PATH = "/markets/statistics-equities/daily/index.html"
-DAILY_ARCHIVE_PATH = "/markets/statistics-equities/daily/00-archives-01.html"
 MONTHLY_CURRENT_PATH = "/markets/statistics-equities/daily/03.html"
 USER_AGENT = "Mozilla/5.0 (compatible; jpx-daily-pdf-dl/1.0)"
 
@@ -226,6 +229,66 @@ def parse_daily_links(html: str) -> dict[str, str]:
     return result
 
 
+def parse_month_json_links(body: bytes) -> dict[str, str]:
+    """tsedaily_report_{YYYYMM}.jsonの中身から、日付文字列(YYYY-MM-DD) ->
+    stq_YYYYMMDD.pdfへの相対パスの対応表を返す(TradeDate/Stocksフィールド、
+    実機確認2026-10-02)。"""
+    data = json.loads(body)
+    result: dict[str, str] = {}
+    for row in data.get("TableDatas", []):
+        trade_date = row.get("TradeDate")
+        stocks_path = row.get("Stocks")
+        if not trade_date or not stocks_path:
+            continue
+        date_str = f"{trade_date[0:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
+        result[date_str] = stocks_path
+    return result
+
+
+# JPXが2026-09-18前後に実施したページ構造変更の境界(実機確認、2026-10-02。詳細は
+# docs/file_download_design.md「ページ構造変更（2026-09-18前後）への対応」参照)。
+# index.html・00-archives-NN.htmlはJavaScript+JSON APIで描画されるようになり、
+# 静的HTMLに埋め込まれたstq_YYYYMMDD.pdfへのリンクが無くなった。ページ自体のJS
+# (BASE_PATH = '/automation/markets/statistics-equities/daily/json/'、
+# OLD_SYSTEM_BOUNDARY = 202608)によれば、この月(YYYYMM)以前は同じbase_path配下の
+# 静的HTMLフラグメント(tsedaily_report_{YYYYMM}.html、STQ_LINK_REで解析可能)が
+# 引き続き提供され、それより新しい月はJSON(tsedaily_report_{YYYYMM}.json)のみで
+# 提供される。
+OLD_SYSTEM_BOUNDARY_YM = "202608"
+DAILY_AUTOMATION_BASE_PATH = "/automation/markets/statistics-equities/daily/json/"
+
+
+def fetch_month_links(year_month: str, stats: RunStats | None = None) -> dict[str, str]:
+    """year_month(YYYY-MM)の日付->stq_YYYYMMDD.pdf相対パス対応表を返す。
+    該当月のデータが無い場合(404)は空の対応表を返す(週末・休日のみの月、または
+    ローリングウィンドウの範囲外)。"""
+    ym_compact = year_month.replace("-", "")
+    base_url = f"https://{BASE_HOST}{DAILY_AUTOMATION_BASE_PATH}tsedaily_report_{ym_compact}"
+    ext = "html" if ym_compact <= OLD_SYSTEM_BOUNDARY_YM else "json"
+    try:
+        body = _http_get(f"{base_url}.{ext}", stats=stats)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {}
+        raise
+    if ext == "html":
+        return parse_daily_links(body.decode("utf-8", errors="ignore"))
+    return parse_month_json_links(body)
+
+
+def months_in_range(start: datetime.date, end: datetime.date) -> list[str]:
+    """[start, end]（両端含む）にまたがる年月(YYYY-MM)の一覧を昇順で返す。"""
+    months: list[str] = []
+    d = datetime.date(start.year, start.month, 1)
+    while d <= end:
+        months.append(f"{d.year:04d}-{d.month:02d}")
+        if d.month == 12:
+            d = datetime.date(d.year + 1, 1, 1)
+        else:
+            d = datetime.date(d.year, d.month + 1, 1)
+    return months
+
+
 def parse_monthly_links(html: str) -> dict[str, str]:
     """03.htmlのHTMLから、{yyyymm}.pdfへのリンクを抽出し、
     年月文字列(YYYY-MM) -> 相対パスの対応表を返す。"""
@@ -269,9 +332,9 @@ def fetch_detailed_daily(
     force: bool = False,
 ) -> None:
     """形式C（詳細日次）を、前日から days_window 日分さかのぼって取得する。
-    index.html・00-archives-01ページを読んで日付->URLの対応表を作り、対象日が
-    そこに含まれていればダウンロードする（含まれない＝週末・休日で提出が無いか、
-    ローリングウィンドウの範囲外）。
+    対象期間にまたがる年月ごとにfetch_month_linksで日付->URLの対応表を作り、
+    対象日がそこに含まれていればダウンロードする（含まれない＝週末・休日で
+    提出が無いか、ローリングウィンドウの範囲外）。
 
     force=Trueの場合、DBの状態・ファイルの存在の両方を無視して必ず再ダウンロードする
     （2026-09-06決定。「forceは現在の状態を無視して取得する」という定義そのものであり、
@@ -283,15 +346,13 @@ def fetch_detailed_daily(
     サイズ）を記録する。"""
     if stats is None:
         stats = RunStats()
-    index_html = _http_get(f"https://{BASE_HOST}{DAILY_INDEX_PATH}", stats=stats).decode("utf-8", errors="ignore")
-    archive_html = _http_get(f"https://{BASE_HOST}{DAILY_ARCHIVE_PATH}", stats=stats).decode(
-        "utf-8", errors="ignore"
-    )
-    links = parse_daily_links(archive_html)
-    links.update(parse_daily_links(index_html))  # 重複する日付はindex.html側を優先
 
     end = last_complete_day_jst()
     start = end - datetime.timedelta(days=days_window - 1)
+
+    links: dict[str, str] = {}
+    for ym in months_in_range(start, end):
+        links.update(fetch_month_links(ym, stats=stats))
 
     for d in date_range(start, end):
         date_str = d.isoformat()

@@ -69,7 +69,25 @@
   実行）で回避する。`edinet-dl`の`migrate_zip_to_gz.py`同様、この使い捨てスクリプトは
   意図的にDockerイメージ（`docker/Dockerfile`）には含めていない。
 
+- **実機不具合の記録（2026-10-02発見・修正済み、JPX側のページ構造変更）**:
+  JPXが2026-09-18前後に`index.html`・`00-archives-NN.html`（形式Cのリンク
+  一覧ページ）をJavaScript+JSON API駆動の描画に変更し、静的HTMLに埋め込まれた
+  `stq_YYYYMMDD.pdf`へのリンクが無くなった。本サービスのスクレイパー
+  （`parse_daily_links`経由）は静的HTMLしか見ないため該当期間（9/18〜9/30の
+  うち週末等を除く12日分）が一覧0件となり、HTTPステータスは200で例外にならない
+  ため「一覧に無い＝週末・休日」という既存ロジックに誤って分類され、エラーも
+  出さずサイレントにスキップされ続けていた（ユーザーからの「未取得の日が多い」
+  という指摘で発覚）。実データ自体はJPX側に失われていなかった
+  （`/automation/markets/statistics-equities/daily/json/tsedaily_report_
+  {YYYYMM}.json`のTradeDate/Stocksフィールドで確認）。`fetch_month_links`を
+  新設し、月がJPX側の境界（`OLD_SYSTEM_BOUNDARY_YM = 202608`、ページのJS内
+  定数から特定）以前ならHTMLフラグメント（`tsedaily_report_{YYYYMM}.html`、
+  既存`parse_daily_links`で解析可）、それより新しければJSON
+  （`tsedaily_report_{YYYYMM}.json`）から日付→URLを解決するよう修正した。
+  `fetch_detailed_daily`・`backfill_detailed_daily_range.py`（同じ理由で
+  00-archives-NN.htmlページネーションが壊れていた）ともこの関数に統一した。
+
 ## 次にやること（未着手）
 
-- なし（形式A・形式B確定済み過去年分のバックフィルは完了。バックフィルレポートの
-  公開方法もS3経由に切り替え済み）
+- 発見次第、Mac Mini上で9/18〜9/30分のバックフィル（`backfill_detailed_daily_range.py
+  --start 2026-09-18 --end 2026-09-30`）を実施する

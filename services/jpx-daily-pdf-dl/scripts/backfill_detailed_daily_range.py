@@ -4,13 +4,15 @@
 使い捨てのバックフィルスクリプト。
 
 fetch_jpx_daily.py本体は、日々の運用に必要な直近数日分の取得にしか使わない
-`index.html`・`00-archives-01.html`（＝直近1ヶ月分）しか読まない。しかし実際の
-ローリングウィンドウは`00-archives-01.html`〜`00-archives-12.html`（実機確認、
-2026-09-14: 01=2026年8月、02=2026年7月、...、12=2025年9月。13以降は空）の
-12ページ＋index.html（当月）で計13ヶ月分をカバーしている。サービスの稼働開始が
+（対象期間にまたがる年月ぶんだけ`fetch_month_links`を呼ぶ）。しかし実際の
+ローリングウィンドウは13ヶ月程度をカバーしている。サービスの稼働開始が
 ウィンドウの途中だった等の理由で、ウィンドウ内なのに未取得の過去月が生じうる
 （実際に2026-09-14時点で、detailed-dailyは2026年08-09月分しか無く、2026年
 01-07月分が未取得のまま残っていた）。本スクリプトはそのギャップを埋める。
+
+対象期間にまたがる年月を`months_in_range`で列挙し、月ごとに`fetch_month_links`
+（JPXが2026-09-18前後に実施したページ構造変更に対応済み、詳細はfetch_jpx_daily.py
+のモジュールdocstring参照）で日付→URLを解決する。
 
 サービス本体と同じfetch_progress（'YYYY-MM-DD' / 'detailed-daily'）・
 同じdetailed-daily/{yyyy}/{mm}/{dd}/stq.pdfパスを共有するため、実行後は
@@ -32,7 +34,6 @@ import logging
 import os
 import sqlite3
 import sys
-import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -44,18 +45,15 @@ from fetch_jpx_daily import (  # noqa: E402
     already_done,
     date_range,
     detailed_daily_path,
+    fetch_month_links,
     init_db,
-    parse_daily_links,
+    months_in_range,
     save_atomic,
     store_progress,
 )
 
 DEFAULT_DB_PATH = "/data/index.db"
 DEFAULT_DATA_DIR = "/data/raw"
-
-# ローリングウィンドウの上限ページ番号。実機確認(2026-09-14)では13ページ目以降が
-# 空だったため12だが、将来ウィンドウ幅が変わっても取りこぼさないよう少し余裕を持つ。
-MAX_ARCHIVE_PAGES = 15
 
 
 def setup_logger() -> logging.Logger:
@@ -68,28 +66,17 @@ def setup_logger() -> logging.Logger:
     return logger
 
 
-def fetch_archive_links(logger: logging.Logger, max_pages: int = MAX_ARCHIVE_PAGES) -> dict[str, str]:
-    """00-archives-01.html〜NNページを順に取得し、日付(YYYY-MM-DD)→相対パスの
-    対応表を返す。リンクが1件も無いページ、または404に達した時点で、それより先は
-    無いと判断して打ち切る（実機確認、2026-09-14: curlでは13ページ目以降が
-    200かつリンク無しだったが、実行時は13ページ目が404を返すこともあった。
-    ページの存在確認自体がJPX側で揺れうるため、両方を「窓の終端」として扱う）。"""
+def fetch_archive_links(
+    start: datetime.date, end: datetime.date, logger: logging.Logger
+) -> dict[str, str]:
+    """[start, end]にまたがる年月ごとにfetch_month_linksを呼び、日付(YYYY-MM-DD)→
+    相対パスの対応表を返す（該当月のデータが無ければ空のまま、fetch_month_links
+    自身が404を吸収する）。"""
     links: dict[str, str] = {}
-    for page in range(1, max_pages + 1):
-        url = f"https://{BASE_HOST}/markets/statistics-equities/daily/00-archives-{page:02d}.html"
-        try:
-            html = _http_get(url).decode("utf-8", errors="ignore")
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                logger.info(f"00-archives-{page:02d}.html: 404、ここで打ち切り")
-                break
-            raise
-        page_links = parse_daily_links(html)
-        if not page_links:
-            logger.info(f"00-archives-{page:02d}.html: リンク無し、ここで打ち切り")
-            break
-        logger.info(f"00-archives-{page:02d}.html: {len(page_links)}件")
-        links.update(page_links)
+    for ym in months_in_range(start, end):
+        month_links = fetch_month_links(ym)
+        logger.info(f"{ym}: {len(month_links)}件")
+        links.update(month_links)
     return links
 
 
@@ -158,7 +145,7 @@ def main() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"対象期間: {start} 〜 {end}")
-    links = fetch_archive_links(logger)
+    links = fetch_archive_links(start, end, logger)
     stats = backfill_range(conn, data_dir, start, end, logger, links, force=args.force)
 
     n_ok = len(stats.processed)
