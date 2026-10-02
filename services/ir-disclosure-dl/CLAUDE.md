@@ -70,10 +70,10 @@ TDnet監視＋東証上場会社情報サービスからのPDF取得を担う`fi
   （`OnCalendar=*-*-* 04:01:42 Asia/Tokyo`。mufg-corporate-actions(04:01:40)より後、
   finance-dwh-transform(04:01:45、finance-dwh側)より前に配置。当初04:01:50として
   いたが、dwh-transformより後に発火してしまう不具合に気づき2026-09-27修正した。
-  なお現時点ではfinance-dwh側にir-disclosure-dlのデータを読むモデルが無いため
-  実害は無いが、将来モデル追加時は`finance-dwh-transform.service`の`After=`に
-  `ir-disclosure-dl.service`を追加する必要がある（finance-dwh側の変更、このリポジトリ
-  の変更のみでは完結しない））
+  2026-09-30、finance-dwh側に`cleansed__ir_disclosure__kessan_tanshin`モデルが
+  追加され、`finance-dwh-transform.service`の`After=`にも`ir-disclosure-dl.service`
+  が追加済み。タイマー順序は元から正しかったため、このリポジトリ側の変更は不要
+  だった）
 - Dockerイメージ: `ghcr.io/ikuty/ir-disclosure-dl:latest`
 
 ## 実装言語の選定理由
@@ -89,3 +89,12 @@ Python 3.12（stdlib中心、`boto3`のみ例外）。他のレイク層サー�
 
 - 実運用での再試行待ち（`status_report.py`の「pending（再試行待ち）」）・
   最終`skipped`／`error`確定の発生率の観察
+
+## 下流（finance-dwh）での利用
+
+- 2026-09-30、finance-dwh側に`cleansed__ir_disclosure__kessan_tanshin`モデル
+  （決算短信PDFのサマリー情報構造化、会社予想EPS含む）を追加した
+  （finance-dwh PR #33）。このリポジトリが着地させるPDF＋メタデータJSON
+  （`{docid}.json`の`disclosure_kind`・タイトル等）をそのまま参照しており、
+  このリポジトリ側の変更は不要だった。詳細はfinance-dwh側の
+  `transform/fdw/ir_disclosure_kessan_facts.py`のモジュールdocstring参照。

@@ -13,46 +13,53 @@ import fetch_jpx_daily as fjd  # noqa: E402
 
 TEST_LOGGER = bddr.setup_logger()
 
-ARCHIVE_PAGE_1 = '<a href="/markets/statistics-equities/daily/data/stq_20260603.pdf">2026/06/03</a>'
-ARCHIVE_PAGE_2 = '<a href="/markets/statistics-equities/daily/data/stq_20260501.pdf">2026/05/01</a>'
+
+def _month_json(entries: dict[str, str]) -> bytes:
+    import json
+
+    table = [{"TradeDate": d.replace("-", ""), "Stocks": p} for d, p in entries.items()]
+    return json.dumps({"TableDatas": table}).encode("utf-8")
 
 
 # --- fetch_archive_links ---------------------------------------------------------------
 
 
-def test_fetch_archive_links_stops_at_first_empty_page() -> None:
-    pages = {1: ARCHIVE_PAGE_1, 2: ARCHIVE_PAGE_2, 3: ""}
+def test_fetch_archive_links_merges_all_months_in_range() -> None:
+    # 2026-08以前(OLD_SYSTEM_BOUNDARY_YM)はHTMLフラグメント形式になるため、
+    # JSON形式のfetch_month_links経路を素直にテストできる2026-09以降の2ヶ月を使う。
+    oct_json = _month_json({"2026-10-02": "/data/stq_20261002.pdf"})
+    sep_json = _month_json({"2026-09-30": "/data/stq_20260930.pdf"})
 
     def fake_http_get(url: str, **kwargs: object) -> bytes:
-        for page, html in pages.items():
-            if f"00-archives-{page:02d}.html" in url:
-                return html.encode("utf-8")
+        if "202610" in url:
+            return oct_json
+        if "202609" in url:
+            return sep_json
         raise AssertionError(f"unexpected url: {url}")
 
-    with patch("backfill_detailed_daily_range._http_get", side_effect=fake_http_get) as mock_get:
-        links = bddr.fetch_archive_links(TEST_LOGGER, max_pages=5)
+    with patch("fetch_jpx_daily._http_get", side_effect=fake_http_get) as mock_get:
+        links = bddr.fetch_archive_links(datetime.date(2026, 9, 30), datetime.date(2026, 10, 2), TEST_LOGGER)
 
     assert links == {
-        "2026-06-03": "/markets/statistics-equities/daily/data/stq_20260603.pdf",
-        "2026-05-01": "/markets/statistics-equities/daily/data/stq_20260501.pdf",
+        "2026-10-02": "/data/stq_20261002.pdf",
+        "2026-09-30": "/data/stq_20260930.pdf",
     }
-    # page 3が空だったので、page 4・5へは進まない
-    assert mock_get.call_count == 3
+    assert mock_get.call_count == 2
 
 
-def test_fetch_archive_links_stops_at_404() -> None:
+def test_fetch_archive_links_tolerates_months_with_no_data() -> None:
     err_404 = urllib.error.HTTPError("http://x", 404, "not found", None, None)  # type: ignore[arg-type]
-    pages = {1: ARCHIVE_PAGE_1.encode("utf-8")}
+    oct_json = _month_json({"2026-10-02": "/data/stq_20261002.pdf"})
 
     def fake_http_get(url: str, **kwargs: object) -> bytes:
-        if "00-archives-01.html" in url:
-            return pages[1]
+        if "202610" in url:
+            return oct_json
         raise err_404
 
-    with patch("backfill_detailed_daily_range._http_get", side_effect=fake_http_get) as mock_get:
-        links = bddr.fetch_archive_links(TEST_LOGGER, max_pages=5)
+    with patch("fetch_jpx_daily._http_get", side_effect=fake_http_get) as mock_get:
+        links = bddr.fetch_archive_links(datetime.date(2026, 9, 30), datetime.date(2026, 10, 2), TEST_LOGGER)
 
-    assert links == {"2026-06-03": "/markets/statistics-equities/daily/data/stq_20260603.pdf"}
+    assert links == {"2026-10-02": "/data/stq_20261002.pdf"}
     assert mock_get.call_count == 2
 
 
