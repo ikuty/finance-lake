@@ -181,6 +181,62 @@ def test_http_get_raises_rate_limited_after_max_retries(monkeypatch: pytest.Monk
             fjd._http_get("http://example/", max_retries=2)
 
 
+# --- parse_month_json_links / fetch_month_links / months_in_range ----------------
+
+
+def _month_json(entries: dict[str, str]) -> bytes:
+    """{date_str(YYYY-MM-DD): rel_path} からtsedaily_report_{YYYYMM}.json相当の
+    バイト列を組み立てる(実機確認2026-10-02の実際のフィールド名に合わせる)。"""
+    table = [
+        {"TradeDate": d.replace("-", ""), "Stocks": p}
+        for d, p in entries.items()
+    ]
+    return json.dumps({"UpdateDate": "2026/10/02 08:31", "TableDatas": table}).encode("utf-8")
+
+
+def test_parse_month_json_links_extracts_trade_date_and_stocks() -> None:
+    body = _month_json({"2026-09-03": "/x/stq_20260903.pdf", "2026-09-02": "/x/stq_20260902.pdf"})
+    assert fjd.parse_month_json_links(body) == {
+        "2026-09-03": "/x/stq_20260903.pdf",
+        "2026-09-02": "/x/stq_20260902.pdf",
+    }
+
+
+def test_parse_month_json_links_ignores_rows_missing_fields() -> None:
+    body = json.dumps({"TableDatas": [{"TradeDate": "20260903"}, {"Stocks": "/x/stq_20260902.pdf"}]}).encode()
+    assert fjd.parse_month_json_links(body) == {}
+
+
+def test_months_in_range_single_month() -> None:
+    assert fjd.months_in_range(datetime.date(2026, 9, 1), datetime.date(2026, 9, 3)) == ["2026-09"]
+
+
+def test_months_in_range_spans_month_boundary() -> None:
+    assert fjd.months_in_range(datetime.date(2026, 8, 30), datetime.date(2026, 9, 2)) == ["2026-08", "2026-09"]
+
+
+def test_fetch_month_links_uses_json_for_months_after_boundary() -> None:
+    body = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
+    with patch("fetch_jpx_daily._http_get", return_value=body) as mock_get:
+        links = fjd.fetch_month_links("2026-09")
+    assert links == {"2026-09-03": "/x/stq_20260903.pdf"}
+    assert mock_get.call_args[0][0].endswith("tsedaily_report_202609.json")
+
+
+def test_fetch_month_links_uses_html_fragment_for_months_at_or_before_boundary() -> None:
+    html = '<a href="/x/stq_20260831.pdf">a</a>'
+    with patch("fetch_jpx_daily._http_get", return_value=html.encode("utf-8")) as mock_get:
+        links = fjd.fetch_month_links("2026-08")
+    assert links == {"2026-08-31": "/x/stq_20260831.pdf"}
+    assert mock_get.call_args[0][0].endswith("tsedaily_report_202608.html")
+
+
+def test_fetch_month_links_returns_empty_on_404() -> None:
+    err = urllib.error.HTTPError("http://x", 404, "Not Found", {}, None)  # type: ignore[arg-type]
+    with patch("fetch_jpx_daily._http_get", side_effect=err):
+        assert fjd.fetch_month_links("2026-09") == {}
+
+
 # --- fetch_detailed_daily --------------------------------------------------------
 
 
@@ -189,15 +245,12 @@ def test_fetch_detailed_daily_downloads_found_dates(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
 
-    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
-    # 対象ウィンドウ(9/1〜9/3)の外側の日付のみアーカイブに含める
+    # 対象ウィンドウ(9/1〜9/3)は09-03のみ月次JSONに含める
     # → ダウンロードが必要になるのは09-03の1件だけになる
-    archive_html = '<a href="/x/stq_20260825.pdf">a</a>'
+    month_json = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
     pdf_bytes = b"%PDF-fake"
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[
-        index_html.encode("utf-8"), archive_html.encode("utf-8"), pdf_bytes,
-    ]):
+    with patch("fetch_jpx_daily._http_get", side_effect=[month_json, pdf_bytes]):
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=3, logger=TEST_LOGGER)
 
     dest = fjd.detailed_daily_path(tmp_path, "2026-09-03")
@@ -214,11 +267,11 @@ def test_fetch_detailed_daily_skips_already_done(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
     fjd.store_progress(conn, "2026-09-03", fjd.FORMAT_DETAILED_DAILY, "done", "https://x/1.pdf", None)
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[b"", b""]) as mock_get:
+    with patch("fetch_jpx_daily._http_get", side_effect=[_month_json({})]) as mock_get:
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER)
 
-    # index/archiveの2回だけ呼ばれ、既にdoneな09-03のPDF自体は取得しに行かない
-    assert mock_get.call_count == 2
+    # 月次JSON取得の1回だけ呼ばれ、既にdoneな09-03のPDF自体は取得しに行かない
+    assert mock_get.call_count == 1
 
 
 def test_fetch_detailed_daily_force_revisits_done_dates(
@@ -228,16 +281,14 @@ def test_fetch_detailed_daily_force_revisits_done_dates(
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
     fjd.store_progress(conn, "2026-09-03", fjd.FORMAT_DETAILED_DAILY, "done", "https://x/old.pdf", None)
-    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+    month_json = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[
-        index_html.encode("utf-8"), b"",
-    ]) as mock_get:
+    with patch("fetch_jpx_daily._http_get", side_effect=[month_json, b"new-content"]) as mock_get:
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, force=True)
 
     # force=Trueならdoneな日付も対象に含める。ファイルがまだ存在しない今回のケースでは
-    # 実際にダウンロードが必要になるため、index/archive+PDF本体で3回呼ばれる
-    assert mock_get.call_count == 3
+    # 実際にダウンロードが必要になるため、月次JSON+PDF本体で2回呼ばれる
+    assert mock_get.call_count == 2
 
 
 def test_fetch_detailed_daily_force_redownloads_even_when_file_already_exists(
@@ -250,16 +301,14 @@ def test_fetch_detailed_daily_force_redownloads_even_when_file_already_exists(
     dest = fjd.detailed_daily_path(tmp_path, "2026-09-03")
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"existing-content")
-    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+    month_json = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[
-        index_html.encode("utf-8"), b"", b"new-content",
-    ]) as mock_get:
+    with patch("fetch_jpx_daily._http_get", side_effect=[month_json, b"new-content"]) as mock_get:
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, force=True)
 
     # force=Trueは「現在の状態（DB・ファイルの両方）を無視して取得する」という定義のため、
-    # 既存ファイルの有無に関わらず必ず再ダウンロードする（index/archive+PDF本体で3回）
-    assert mock_get.call_count == 3
+    # 既存ファイルの有無に関わらず必ず再ダウンロードする（月次JSON+PDF本体で2回）
+    assert mock_get.call_count == 2
     assert dest.read_bytes() == b"new-content"
 
 
@@ -273,13 +322,13 @@ def test_fetch_detailed_daily_skips_download_when_file_exists_and_not_forced(
     dest = fjd.detailed_daily_path(tmp_path, "2026-09-03")
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"existing-content")
-    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+    month_json = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[index_html.encode("utf-8"), b""]) as mock_get:
+    with patch("fetch_jpx_daily._http_get", side_effect=[month_json]) as mock_get:
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER)
 
     # force無しの場合のみ、無駄なネットワークアクセスを避けるため既存ファイルはスキップする
-    assert mock_get.call_count == 2
+    assert mock_get.call_count == 1
     assert dest.read_bytes() == b"existing-content"
     assert fjd.already_done(conn, "2026-09-03", fjd.FORMAT_DETAILED_DAILY)
 
@@ -291,10 +340,8 @@ def test_fetch_detailed_daily_marks_error_on_download_failure(
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
 
-    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
-    with patch("fetch_jpx_daily._http_get", side_effect=[
-        index_html.encode("utf-8"), b"", RuntimeError("boom"),
-    ]):
+    month_json = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
+    with patch("fetch_jpx_daily._http_get", side_effect=[month_json, RuntimeError("boom")]):
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER)
 
     row = conn.execute(
@@ -415,11 +462,11 @@ def test_fetch_detailed_daily_records_stats_on_success(tmp_path: Path, monkeypat
     conn = fjd.init_db(tmp_path / "index.db")
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
-    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+    month_json = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
     pdf_bytes = b"%PDF-fake"
     stats = fjd.RunStats()
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[index_html.encode("utf-8"), b"", pdf_bytes]):
+    with patch("fetch_jpx_daily._http_get", side_effect=[month_json, pdf_bytes]):
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, stats=stats)
 
     assert stats.processed == [("2026-09-03", fjd.FORMAT_DETAILED_DAILY)]
@@ -432,12 +479,10 @@ def test_fetch_detailed_daily_records_stats_on_failure(tmp_path: Path, monkeypat
     conn = fjd.init_db(tmp_path / "index.db")
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(fjd, "last_complete_day_jst", lambda: datetime.date(2026, 9, 3))
-    index_html = '<a href="/x/stq_20260903.pdf">a</a>'
+    month_json = _month_json({"2026-09-03": "/x/stq_20260903.pdf"})
     stats = fjd.RunStats()
 
-    with patch("fetch_jpx_daily._http_get", side_effect=[
-        index_html.encode("utf-8"), b"", RuntimeError("boom"),
-    ]):
+    with patch("fetch_jpx_daily._http_get", side_effect=[month_json, RuntimeError("boom")]):
         fjd.fetch_detailed_daily(conn, tmp_path, days_window=1, logger=TEST_LOGGER, stats=stats)
 
     assert stats.processed == []
