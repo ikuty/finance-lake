@@ -17,7 +17,7 @@ Usage:
     python3 backfill_reit.py --edinet-code E24347   # 単一銘柄のみ（検証用）
 
 設定は環境変数から読む(fetch_documents.pyと同じ、Dockerの--env-fileを想定):
-    DATA_DIR             省略時 /data
+    DATA_DIR             省略時 /data/raw（fetch_documents.pyと同じ）
     EDINET_API_KEY       必須
     LOG_PATH             省略時 /data/logs/backfill-reit.log
     REQUEST_DELAY        省略時 0.5 (秒)
@@ -34,7 +34,7 @@ from typing import Any
 
 import fetch_documents
 
-DEFAULT_DATA_DIR = "/data"
+DEFAULT_DATA_DIR = "/data/raw"
 DEFAULT_LOG_PATH = "/data/logs/backfill-reit.log"
 DEFAULT_REQUEST_DELAY = 0.5
 ENABLED_TYPES = {1, 2, 5}
