@@ -27,7 +27,7 @@ DAYS_WINDOWの対象期間の終端は「今日」ではなく**前日**（`last
 
 対象は secCode が設定されている書類（上場企業）、および formCode が '07B'/'10B'
 （REIT＝投資法人の有報・半期報告書、2026-10-11追加。REITはsecCodeが常にnullのため別途
-判定する。詳細は`_is_reit_form_code`・services/ir-disclosure-dl/docs/reit_support_design.md
+判定する。詳細は`is_reit_form_code`・services/ir-disclosure-dl/docs/reit_support_design.md
 参照）のいずれか。type=1(XBRL)・type=2(PDF)・
 type=5(CSV化XBRL)の3形式のうち、--csv/--pdf/--xbrlで指定したものだけを取得する
 （いずれも未指定なら全形式が対象、後方互換のデフォルト）。XBRL・CSVはEDINETから
@@ -530,7 +530,7 @@ def download_doc_files(
     return ok
 
 
-def _is_reit_form_code(form_code: str | None) -> bool:
+def is_reit_form_code(form_code: str | None) -> bool:
     """REIT（投資法人）の有報・訂正有報・半期報告書・訂正半期報告書のformCodeか判定する。
 
     REITは書類一覧APIのsecCodeが常にnullになる（2026-10-11実機確認）ため、secCode
@@ -560,7 +560,7 @@ def process_day(
     data = fetch_day(client, date_str, api_key, stats)
     save_list_response(data_dir, date_str, data)
     all_results = data.get("results", [])
-    targets = [r for r in all_results if r.get("secCode") or _is_reit_form_code(r.get("formCode"))]
+    targets = [r for r in all_results if r.get("secCode") or is_reit_form_code(r.get("formCode"))]
     logger.info(f"{date_str}: 一覧{len(all_results)}件 / 対象{len(targets)}件")
 
     failed_doc_ids: list[str] = []

@@ -859,12 +859,12 @@ def test_process_day_filters_out_docs_without_seccode(
 
 @pytest.mark.parametrize("form_code", ["07B000", "07B001", "10B000", "10B001"])
 def test_is_reit_form_code_matches_reit_forms(form_code: str) -> None:
-    assert fetch_documents._is_reit_form_code(form_code) is True
+    assert fetch_documents.is_reit_form_code(form_code) is True
 
 
 @pytest.mark.parametrize("form_code", ["07A000", "082000", "09A000", "06A000", None, ""])
 def test_is_reit_form_code_rejects_non_reit_forms(form_code: str | None) -> None:
-    assert fetch_documents._is_reit_form_code(form_code) is False
+    assert fetch_documents.is_reit_form_code(form_code) is False
 
 
 def test_process_day_includes_reit_docs_without_seccode(
