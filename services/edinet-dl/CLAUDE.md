@@ -59,6 +59,22 @@ Python 3.12（stdlib中心）を採用。本ジョブはEDINET APIへのI/Oバ�
 - Mac Mini側の実ディレクトリ・`.env`・systemd unitの新パスへの移行
 - GitHub Actionsワークフローのリネーム・pathsフィルタ追加
 - `docs/definitions`（docTypeCodeごとの標準タクソノミ要素定義）の作成（設計方針は合意済み、未着手）
+- **REIT（投資法人）対応**（2026-10-07判明、2026-10-11 Phase 0完了・Phase 1着手）: 現状、
+  書類一覧APIの`secCode`で絞り込んでいるため（本ファイル冒頭「対象はsecCodeが設定されている
+  書類」参照）、REITの書類は一度もレイクに取得されていない。EDINET上、投資法人には書類一覧
+  APIの`secCode`が付与されない（常に`null`）ため。
+  ただし、XBRL本体のDEI項目（`jpdei_cor:SecurityCodeDEI`＝「証券コード、DEI」）には、通常の
+  株式会社と全く同じ形式で証券コードが入っている（実機確認: アドバンス・レジデンス投資法人
+  (edinetCode=E24347, fundCode=G07884)の第28期有報で値`"32690"`＝証券コード3269の5桁表記）。
+  このため、書類一覧APIの`fundCode`が設定されている書類も取得対象に含めれば、DWH側の
+  `intermediate__edinet__dei_facts`の既存ロジックは改修なしで証券コードを取得できる見込み。
+  財務数値のうち絶対額系（純資産・当期純利益等）は`jppfs_cor:`名前空間（通常企業の生タグと
+  共通）から取得可能だが、1口当たり指標（EPS/BPS相当）はEDINET有報に構造化タグが存在しない
+  ことがPhase 0調査で確定した（代わりに`ir-disclosure-dl`経由のTDnet/JPX決算短信iXBRLを使う
+  設計にした）。Phase 0の詳細な調査結果・方針・Phase構成は
+  `services/ir-disclosure-dl/docs/reit_support_design.md`参照。
+  （J-Quantsを使った数値検証プロジェクトの一環で、REITの開示がDWHに一切存在しないことから
+  発覚した。検証プロジェクト自体はREITを対象外として進める。）
 
 ## 参照
 

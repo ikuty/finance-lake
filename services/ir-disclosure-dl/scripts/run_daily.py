@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """TDnet（release.tdnet.info）の日次適時開示一覧を監視し、対象銘柄
-（seed/edinet_common_stock_issuers.csv、普通株式発行体のみ）の決算短信・
+（seed/edinet_common_stock_issuers.csv、普通株式発行体 + seed/edinet_reit_issuers.csv、
+不動産REIT62社、2026-10-11追加・docs/reit_support_design.md参照）の決算短信・
 業績予想の修正を検知する。検知した開示については、東証上場会社情報サービス
 （www2.jpx.co.jp）から対応するPDFを直接取得する（TDnet自体のPDFは二次利用が
 禁止されているため使わない。設計の詳細はdocs/jpx_disclosure_design.md参照）。
+REITの決算短信には構造化タグ（1口当たり指標等）を持つiXBRLファイルも付随するため、
+これもPDFと同じ場所に取得する。
 
 このリポジトリはファイルの取得・格納（レイク層）に特化する。書類の解釈（パース）
 は後段の別リポジトリ（finance-dwh）の責務とし、ここでは扱わない。
@@ -19,6 +22,7 @@ Usage:
     DATA_DIR             省略時 /data/raw
     LOG_PATH             省略時 /data/logs/ir-disclosure-dl.log
     SEED_CSV_PATH        省略時 /app/seed/edinet_common_stock_issuers.csv
+    REIT_SEED_CSV_PATH   省略時 /app/seed/edinet_reit_issuers.csv
     TDNET_DAYS_WINDOW    省略時 2。--days未指定時に日次実行で遡る日数
     REQUEST_DELAY        省略時 2.0 (秒)。JPX上場会社情報サービスへの銘柄ごとの
                          リクエスト間隔（ボット対策は実機確認上見られないが、
@@ -58,6 +62,7 @@ DEFAULT_DB_PATH = "/data/ir_disclosure.db"
 DEFAULT_DATA_DIR = "/data/raw"
 DEFAULT_LOG_PATH = "/data/logs/ir-disclosure-dl.log"
 DEFAULT_SEED_CSV_PATH = "/app/seed/edinet_common_stock_issuers.csv"
+DEFAULT_REIT_SEED_CSV_PATH = "/app/seed/edinet_reit_issuers.csv"
 DEFAULT_TDNET_DAYS_WINDOW = 2
 DEFAULT_REQUEST_DELAY = 2.0
 DEFAULT_TIME_BUDGET_SECONDS = 90 * 60
@@ -156,6 +161,7 @@ def build_pdf_metadata(
         "jpx_disclosure_date": match.disclosure_date,
         "jpx_title": match.title,
         "pdf_url": match.pdf_url,
+        "ixbrl_url": match.ixbrl_url,
     }
 
 
@@ -257,6 +263,15 @@ def process_pdf_downloads(
                 dest = date_hierarchy_dir(data_dir, event["event_date"]) / event["edinet_code"] / basename
                 save_atomic(dest, body)
 
+                # REIT（投資法人）の決算短信にはiXBRL（inline XBRL）HTMLファイルが付随する
+                # （2026-10-11追加、docs/reit_support_design.md参照）。PDFと同じ場所に
+                # そのままのファイル名で保存する。取得失敗時はPDFも含めてイベント全体を
+                # 再試行対象にする（下のexceptブロックに委ねる、部分的な成功を記録しない）。
+                if match.ixbrl_url:
+                    ixbrl_body = jpx_disclosure_client.download_ixbrl(client, match.ixbrl_url)
+                    ixbrl_basename = match.ixbrl_url.rsplit("/", 1)[-1]
+                    save_atomic(dest.parent / ixbrl_basename, ixbrl_body)
+
                 metadata = build_pdf_metadata(event, sec_code, match)
                 metadata_json = json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8")
                 save_atomic(dest.with_suffix(".json"), metadata_json)
@@ -341,6 +356,7 @@ def main() -> None:
     data_dir = Path(os.environ.get("DATA_DIR", DEFAULT_DATA_DIR))
     log_path = os.environ.get("LOG_PATH", DEFAULT_LOG_PATH)
     seed_csv_path = Path(os.environ.get("SEED_CSV_PATH", DEFAULT_SEED_CSV_PATH))
+    reit_seed_csv_path = Path(os.environ.get("REIT_SEED_CSV_PATH", DEFAULT_REIT_SEED_CSV_PATH))
     delay = float(os.environ.get("REQUEST_DELAY", DEFAULT_REQUEST_DELAY))
     time_budget_seconds = float(os.environ.get("TIME_BUDGET_SECONDS", DEFAULT_TIME_BUDGET_SECONDS))
     slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
@@ -350,7 +366,8 @@ def main() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     n_seed = load_seed_companies(conn, seed_csv_path)
-    logger.info(f"seed取り込み: {n_seed}社")
+    n_reit_seed = load_seed_companies(conn, reit_seed_csv_path)
+    logger.info(f"seed取り込み: {n_seed}社（普通株式）+ {n_reit_seed}社（REIT）")
 
     if args.date:
         dates = [datetime.date.fromisoformat(args.date)]
