@@ -380,6 +380,47 @@ def test_fetch_document_file_raises_after_exhausting_retries_on_malformed_respon
         fetch_documents.fetch_document_file(client, "S100AAAA", 5, "dummy-key", stats, max_retries=5)
 
 
+def test_fetch_document_file_fails_fast_on_edinet_error_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    # HTTPステータス200でも、書類が恒久的に取得できない場合はEDINET独自の
+    # {"metadata": {"status": "404", ...}}という形のエラー本体が返る（2026-10-11実機
+    # 確認: REITの一部の古い書類）。これはリトライしても解決しないため、
+    # マジックバイト不一致用の5回リトライを経由せず即座に失敗する。
+    error_body = json.dumps(
+        {"metadata": {"title": "書類取得API", "status": "404", "message": "Not Found"}}
+    ).encode("utf-8")
+    stats = make_stats()
+    client = make_client((200, error_body))
+    sleep_calls = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    with pytest.raises(RuntimeError, match="EDINET APIエラー status=404"):
+        fetch_documents.fetch_document_file(client, "S100MI4D", 1, "dummy-key", stats)
+
+    assert sleep_calls == []
+    assert stats.malformed_response_retries == 0
+
+
+def test_edinet_error_status_detects_error_envelope() -> None:
+    body = json.dumps({"metadata": {"status": "404", "message": "Not Found"}}).encode("utf-8")
+    assert fetch_documents._edinet_error_status(body) == "404"
+
+
+def test_edinet_error_status_returns_none_for_success_envelope() -> None:
+    body = json.dumps({"metadata": {"status": "200", "message": "OK"}}).encode("utf-8")
+    assert fetch_documents._edinet_error_status(body) is None
+
+
+def test_edinet_error_status_returns_none_for_non_json_body() -> None:
+    assert fetch_documents._edinet_error_status(b"PK\x03\x04binary-zip-data") is None
+
+
+def test_edinet_error_status_returns_none_for_other_json_shapes() -> None:
+    # API Gateway等の別形式のエラー本体(statusCodeキー、metadataキーなし)は対象外。
+    # 既存のマジックバイト不一致リトライ経路に委ねる。
+    body = json.dumps({"statusCode": "429", "message": "Too Many Requests"}).encode("utf-8")
+    assert fetch_documents._edinet_error_status(body) is None
+
+
 # --- doc_output_path / save_atomic ------------------------------------------------
 
 

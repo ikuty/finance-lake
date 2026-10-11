@@ -369,6 +369,30 @@ def _looks_like_expected_format(body: bytes, type_code: int) -> bool:
     return True
 
 
+def _edinet_error_status(body: bytes) -> str | None:
+    """レスポンスがEDINET APIのエラーエンベロープ（{"metadata": {"status": "404", ...}}）
+    であれば、そのstatus文字列を返す。該当しなければNoneを返す。HTTPステータス自体は
+    200でも、書類が見つからない等の理由でこの形のエラーが返ることがある（2026-10-11
+    実機確認: REITの一部の古い書類で発生、原因不明だがEDINET側の恒久的な欠落と推定—
+    同日・同じ一覧に載っている他社の書類は正常に取得できるため、この一覧APIレスポンス
+    自体や認証の問題ではない）。_looks_like_expected_format()のマジックバイト不一致
+    検知だけでは「恒久的に存在しない」と「一時的に壊れたレスポンス」を区別できず、
+    5回リトライ(指数バックオフで最大60秒超)してから諦めるため無駄に時間がかかる。
+    fetch_day()のmetadata.status検知と同根の問題。"""
+    if not body.startswith(b"{"):
+        return None
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    status = data.get("metadata", {}).get("status")
+    if status in ("200", "OK"):
+        return None
+    return status if isinstance(status, str) else None
+
+
 def fetch_document_file(
     client: EdinetHttpClient, doc_id: str, type_code: int, api_key: str, stats: RunStats, max_retries: int = 5
 ) -> bytes:
@@ -377,6 +401,11 @@ def fetch_document_file(
     while True:
         attempt += 1
         body = client.get(path, stats, max_retries=max_retries)
+
+        error_status = _edinet_error_status(body)
+        if error_status is not None:
+            raise RuntimeError(f"{doc_id} type={type_code}: EDINET APIエラー status={error_status}: {body[:200]!r}")
+
         if _looks_like_expected_format(body, type_code):
             return body
         stats.malformed_response_retries += 1
