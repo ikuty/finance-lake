@@ -68,6 +68,78 @@ def test_parse_kessan_disclosures_extracts_only_1101_rows() -> None:
     disclosures = jpx_disclosure_client.parse_kessan_disclosures(SAMPLE_HTML)
     assert len(disclosures) == 3
     assert all("999999999999999999" not in d.pdf_url for d in disclosures)
+    assert all(d.ixbrl_url is None for d in disclosures)
+
+
+# REIT（投資法人）の決算短信行の実機確認済み(2026-10-11)HTML構造を模したフィクスチャ。
+# 通常企業とはid="4101_N"を使う点、PDFリンクに続けてiXBRL（inline XBRL）HTMLファイルへの
+# 直リンクが同じ<tr>内に付く点が異なる（アドバンス・レジデンス投資法人(3269)で実機確認）。
+REIT_SAMPLE_HTML = """
+<tr id="4101_1">
+    <td align="center">2026/09/17</td>
+    <td >
+        <div class="txtLink2">
+            <div class="txtLink2_InnerDiv">
+                <a href="/disc/32690/140120260917537732.pdf" target="linkWin9_1">
+                    2026年07月期決算短信（REIT）
+                </a>
+            </div>
+        </div>
+    </td>
+    <td align="center">
+        <img src="/common/images/icon_xbrl.gif" class="cursorHand" alt="XBRL" width="31" height="31" border="0"
+            onclick="doDownload(document.forms['JJK010040Form'],
+                document.forms['JJK010040Form'].XBRLDownload,
+                '/32690/081220260917537732.zip');"/>
+    </td>
+    <td align="center">
+        <a href="/disc/32690/081220260917537732_tse-anrejpsm-32690-20260917332690-ixbrl.htm" target="linkWin7_2">
+            <img src="/common/images/icon_html_03.gif" alt="HTMLファイル" width="31" height="31" border="0" />
+        </a>
+    </td>
+    <td align="center">
+        <a href="/disc/32690/081220260917537732_qualitative.htm" target="linkWin7_2">
+            <img src="/common/images/icon_html_03.gif" alt="HTMLファイル" width="31" height="31" border="0" />
+        </a>
+    </td>
+</tr>
+<tr id="4101_2">
+    <td align="center">2026/03/17</td>
+    <td >
+        <div class="txtLink2">
+            <div class="txtLink2_InnerDiv">
+                <a href="/disc/32690/140120260317583848.pdf" target="linkWin9_1">
+                    2026年01月期（第31期） 決算説明資料
+                </a>
+            </div>
+        </div>
+    </td>
+    <td align="center">
+        &nbsp;
+    </td>
+    <td align="center">
+    </td>
+</tr>
+"""
+
+
+def test_parse_kessan_disclosures_extracts_4101_rows_for_reit() -> None:
+    disclosures = jpx_disclosure_client.parse_kessan_disclosures(REIT_SAMPLE_HTML)
+    assert len(disclosures) == 2
+    assert disclosures[0].pdf_url == "https://www2.jpx.co.jp/disc/32690/140120260917537732.pdf"
+
+
+def test_parse_kessan_disclosures_extracts_ixbrl_url_for_reit_kessan() -> None:
+    disclosures = jpx_disclosure_client.parse_kessan_disclosures(REIT_SAMPLE_HTML)
+    assert disclosures[0].ixbrl_url == (
+        "https://www2.jpx.co.jp/disc/32690/081220260917537732_tse-anrejpsm-32690-20260917332690-ixbrl.htm"
+    )
+
+
+def test_parse_kessan_disclosures_ixbrl_url_absent_when_no_xbrl_icon() -> None:
+    # 決算説明資料（決算短信ではない）の行にはXBRL/iXBRLリンクが無い。
+    disclosures = jpx_disclosure_client.parse_kessan_disclosures(REIT_SAMPLE_HTML)
+    assert disclosures[1].ixbrl_url is None
 
 
 def test_parse_kessan_disclosures_resolves_absolute_url() -> None:
@@ -97,7 +169,7 @@ def test_select_matching_disclosure_returns_none_when_no_keyword_match() -> None
 
 def test_title_matches_kind_catches_non_contiguous_forecast_revision_title() -> None:
     # tdnet_clientと同じ理由（実機確認済み、2026-09-27）で緩い判定にしている。
-    assert jpx_disclosure_client._title_matches_kind(
+    assert jpx_disclosure_client.title_matches_kind(
         "業績予想(連結)の修正に関するお知らせ", "forecast_revision"
     ) is True
 

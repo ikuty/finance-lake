@@ -857,6 +857,55 @@ def test_process_day_filters_out_docs_without_seccode(
     assert mock_dl.call_count == 1
 
 
+@pytest.mark.parametrize("form_code", ["07B000", "07B001", "10B000", "10B001"])
+def test_is_reit_form_code_matches_reit_forms(form_code: str) -> None:
+    assert fetch_documents._is_reit_form_code(form_code) is True
+
+
+@pytest.mark.parametrize("form_code", ["07A000", "082000", "09A000", "06A000", None, ""])
+def test_is_reit_form_code_rejects_non_reit_forms(form_code: str | None) -> None:
+    assert fetch_documents._is_reit_form_code(form_code) is False
+
+
+def test_process_day_includes_reit_docs_without_seccode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REIT(投資法人)はsecCodeが常にnullだが、formCodeが'07B'/'10B'なら対象に含める。
+    一方、secCodeもなく'07A'(投資信託・REITではない)のformCodeを持つ書類は除外されたままにする。"""
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    stats = make_stats()
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    data = {
+        "results": [
+            {"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340", "formCode": None},
+            {
+                "docID": "S100CCCC",
+                "edinetCode": "E24347",
+                "secCode": None,
+                "formCode": "07B000",
+                "fundCode": "G07884",
+            },
+            {
+                "docID": "S100DDDD",
+                "edinetCode": "E12444",
+                "secCode": None,
+                "formCode": "07A000",
+                "fundCode": "G07361",
+            },
+        ]
+    }
+    with patch("fetch_documents.fetch_day", return_value=data), \
+         patch("fetch_documents.download_doc_files", return_value=True) as mock_dl:
+        count = fetch_documents.process_day(
+            conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
+            TEST_LOGGER, "test.log", ALL_TYPES
+        )
+
+    assert count == 2
+    assert mock_dl.call_count == 2
+
+
 # --- Slack通知 ---------------------------------------------------------------
 
 

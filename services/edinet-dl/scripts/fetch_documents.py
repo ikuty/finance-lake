@@ -25,7 +25,10 @@ DAYS_WINDOWの対象期間の終端は「今日」ではなく**前日**（`last
 されると、`already_done()`により当日の本当のデータ（その日の営業時間中に提出される分）
 が翌日以降も二度と自動取得されなくなる不具合があった。
 
-対象は secCode が設定されている書類（上場企業）のみ。type=1(XBRL)・type=2(PDF)・
+対象は secCode が設定されている書類（上場企業）、および formCode が '07B'/'10B'
+（REIT＝投資法人の有報・半期報告書、2026-10-11追加。REITはsecCodeが常にnullのため別途
+判定する。詳細は`_is_reit_form_code`・services/ir-disclosure-dl/docs/reit_support_design.md
+参照）のいずれか。type=1(XBRL)・type=2(PDF)・
 type=5(CSV化XBRL)の3形式のうち、--csv/--pdf/--xbrlで指定したものだけを取得する
 （いずれも未指定なら全形式が対象、後方互換のデフォルト）。XBRL・CSVはEDINETから
 zip形式で返るが、DWH等での後利用を考慮し、展開した上で中身の各ファイルを個別に
@@ -527,6 +530,18 @@ def download_doc_files(
     return ok
 
 
+def _is_reit_form_code(form_code: str | None) -> bool:
+    """REIT（投資法人）の有報・訂正有報・半期報告書・訂正半期報告書のformCodeか判定する。
+
+    REITは書類一覧APIのsecCodeが常にnullになる（2026-10-11実機確認）ため、secCode
+    絞り込みだけでは一度もレイクに取得されない。formCode先頭3文字 '07B'（有報/訂正有報）
+    '10B'（半期報告書/訂正半期報告書）がREIT固有の値（Mac Mini実データ全件をordinance_code
+    ='030'でformCode別に集計して確認、'07A'は投資信託・ミューチュアルファンドでREITでは
+    ない）。詳細はservices/ir-disclosure-dl/docs/reit_support_design.md参照。
+    """
+    return form_code is not None and form_code[:3] in ("07B", "10B")
+
+
 def process_day(
     conn: sqlite3.Connection,
     client: EdinetHttpClient,
@@ -545,7 +560,7 @@ def process_day(
     data = fetch_day(client, date_str, api_key, stats)
     save_list_response(data_dir, date_str, data)
     all_results = data.get("results", [])
-    targets = [r for r in all_results if r.get("secCode")]
+    targets = [r for r in all_results if r.get("secCode") or _is_reit_form_code(r.get("formCode"))]
     logger.info(f"{date_str}: 一覧{len(all_results)}件 / 対象{len(targets)}件")
 
     failed_doc_ids: list[str] = []

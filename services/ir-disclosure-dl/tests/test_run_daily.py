@@ -106,6 +106,110 @@ class _FakeJpxClient:
         return _JPX_HTML.encode("utf-8")
 
 
+_REIT_JPX_HTML = """
+<tr id="4101_0">
+    <td align="center">2026/09/17</td>
+    <td >
+        <div class="txtLink2">
+            <div class="txtLink2_InnerDiv">
+                <a href="/disc/32690/140120260917537732.pdf" target="linkWin9_1">
+                    2026年07月期決算短信（REIT）
+                </a>
+            </div>
+        </div>
+    </td>
+    <td align="center">
+        <img src="/common/images/icon_xbrl.gif" class="cursorHand" alt="XBRL" width="31" height="31" border="0"
+            onclick="doDownload(document.forms['JJK010040Form'],
+                document.forms['JJK010040Form'].XBRLDownload,
+                '/32690/081220260917537732.zip');"/>
+    </td>
+    <td align="center">
+        <a href="/disc/32690/081220260917537732_tse-anrejpsm-32690-20260917332690-ixbrl.htm" target="linkWin7_2">
+            <img src="/common/images/icon_html_03.gif" alt="HTMLファイル" width="31" height="31" border="0" />
+        </a>
+    </td>
+</tr>
+"""
+
+
+class _FakeJpxClientReit:
+    def get(self, url: str) -> bytes:
+        return b""
+
+    def post_form(self, url: str, fields: dict[str, str], referer: str | None = None) -> bytes:
+        return _REIT_JPX_HTML.encode("utf-8")
+
+
+def test_process_pdf_downloads_saves_ixbrl_alongside_pdf_for_reit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REITの決算短信はPDFに加えてiXBRLファイルも同じ場所に保存する
+    （docs/reit_support_design.md参照、1口当たり指標等が構造化タグとして
+    取得できるのはこちらのみ）。"""
+    conn = db.init_db(tmp_path / "test.db")
+    db.upsert_company(conn, "E24347", "32690", "3269", "アドバンス・レジデンス投資法人")
+    db.insert_tdnet_event(
+        conn, "2026-09-17", "15:00", "32690", "E24347", "アドバンス・レジデンス投資法人",
+        "2026年07月期決算短信（REIT）", "kessan_tanshin",
+    )
+    conn.commit()
+
+    monkeypatch.setattr(jpx_disclosure_client, "download_pdf", lambda client, url: b"%PDF-fake")
+    monkeypatch.setattr(jpx_disclosure_client, "download_ixbrl", lambda client, url: b"<html>ixbrl-fake</html>")
+
+    data_dir = tmp_path / "raw"
+    stats = run_daily.RunStats()
+    logger = logging.getLogger("test")
+    run_daily.process_pdf_downloads(conn, _FakeJpxClientReit(), data_dir, 0.0, stats, logger)
+
+    assert stats.pdf_downloaded == 1
+    doc_dir = data_dir / "2026" / "09" / "17" / "E24347"
+    pdf_path = doc_dir / "140120260917537732.pdf"
+    ixbrl_path = doc_dir / "081220260917537732_tse-anrejpsm-32690-20260917332690-ixbrl.htm"
+    assert pdf_path.read_bytes() == b"%PDF-fake"
+    assert ixbrl_path.read_bytes() == b"<html>ixbrl-fake</html>"
+
+    metadata = json.loads(pdf_path.with_suffix(".json").read_text(encoding="utf-8"))
+    assert metadata["ixbrl_url"] == (
+        "https://www2.jpx.co.jp/disc/32690/081220260917537732_tse-anrejpsm-32690-20260917332690-ixbrl.htm"
+    )
+
+
+def test_process_pdf_downloads_retries_whole_event_when_ixbrl_download_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """iXBRL取得が失敗した場合、PDFだけ保存済みの中途半端な状態を確定記録しない。
+    イベント全体を（PDF取得失敗時と同じ経路で）翌日再試行の対象にする。"""
+    import datetime
+
+    conn = db.init_db(tmp_path / "test.db")
+    db.upsert_company(conn, "E24347", "32690", "3269", "アドバンス・レジデンス投資法人")
+    db.insert_tdnet_event(
+        conn, "2026-09-17", "15:00", "32690", "E24347", "アドバンス・レジデンス投資法人",
+        "2026年07月期決算短信（REIT）", "kessan_tanshin",
+    )
+    conn.commit()
+
+    monkeypatch.setattr(jpx_disclosure_client, "download_pdf", lambda client, url: b"%PDF-fake")
+
+    def _fail_ixbrl(client: object, url: str) -> bytes:
+        raise RuntimeError("ixbrl boom")
+
+    monkeypatch.setattr(jpx_disclosure_client, "download_ixbrl", _fail_ixbrl)
+    monkeypatch.setattr(tdnet_client, "today_jst", lambda: datetime.date(2026, 9, 18))
+
+    data_dir = tmp_path / "raw"
+    stats = run_daily.RunStats()
+    logger = logging.getLogger("test")
+    run_daily.process_pdf_downloads(conn, _FakeJpxClientReit(), data_dir, 0.0, stats, logger)
+
+    assert stats.pdf_downloaded == 0
+    assert stats.pdf_pending_retry == 1
+    row = conn.execute("SELECT status FROM pdf_downloads").fetchone()
+    assert row is None  # MAX_PENDING_RETRY_DAYS未満なので確定記録されない
+
+
 def test_process_pdf_downloads_writes_pdf_and_sidecar_metadata_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -143,6 +247,7 @@ def test_process_pdf_downloads_writes_pdf_and_sidecar_metadata_json(
         "jpx_disclosure_date": "2026/09/25",
         "jpx_title": "業績予想(連結)の修正に関するお知らせ",
         "pdf_url": "https://www2.jpx.co.jp/disc/95090/140120260916537214.pdf",
+        "ixbrl_url": None,
     }
 
 
