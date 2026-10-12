@@ -39,11 +39,12 @@ SEARCH_POST_URL = "https://www2.jpx.co.jp/tseHpFront/JJK010010Action.do"
 DETAIL_POST_URL = "https://www2.jpx.co.jp/tseHpFront/JJK010030Action.do"
 DISC_HOST = "https://www2.jpx.co.jp"
 
-# 適時開示情報[決算情報]カテゴリの行だけがid="1101_N"を持つ（実機確認、2026-09-27。
-# 他カテゴリ[決定事実/発生事実]等は1102・1105・1106・1107・1109等の別プレフィックス
-# を使うため、外側のtable境界を追わずこのidだけで安全に絞り込める）。
+# 適時開示情報[決算情報]カテゴリの行は、通常企業はid="1101_N"、REIT（投資法人）は
+# id="4101_N"を持つ（実機確認、通常企業は2026-09-27・REITは2026-10-11）。他カテゴリ
+# [決定事実/発生事実]等は1102・1105・1106・1107・1109等の別プレフィックスを使うため、
+# 外側のtable境界を追わずこのidだけで安全に絞り込める。
 _ROW_PATTERN = re.compile(
-    r'<tr id="1101_\d+">\s*'
+    r'<tr id="(?:1101|4101)_\d+">\s*'
     r'<td align="center">\s*(?P<date>[\d/]+)\s*</td>\s*'
     r'<td\s*>\s*'
     r'<div class="txtLink2">\s*'
@@ -52,12 +53,23 @@ _ROW_PATTERN = re.compile(
     re.S,
 )
 
+# REITの決算短信行には、PDFへのリンクに続けてiXBRL（inline XBRL）HTMLファイルへの
+# 直リンクが同じ<tr>内に付いている（実機確認、2026-10-11。通常企業向けの決算短信には
+# 同種のリンクは確認していない）。1口当たり純資産額・1口当たり利益・1口当たり分配金・
+# 発行済投資口総数等が`tse-re-t:`タクソノミの構造化タグとして個別に取得できる
+# （EDINET側には存在しない。詳細はdocs/reit_support_design.md参照）。
+# 行の境界（次の<tr>の開始、またはこの範囲）を厳密に追わず、次の行の開始位置までの
+# 範囲内だけを検索すれば十分（同じ<tr>内に複数のiXBRLリンクが並ぶことはない）。
+_IXBRL_HREF_PATTERN = re.compile(r'href="([^"]+-ixbrl\.htm)"')
+_MAX_ROW_WINDOW = 3000
+
 
 @dataclass(frozen=True)
 class JpxDisclosure:
     disclosure_date: str  # YYYY/MM/DD (JPXの表示形式のまま)
     title: str
     pdf_url: str
+    ixbrl_url: str | None = None
 
 
 def fetch_company_page(client: HttpClientLike, sec_code: str) -> str:
@@ -94,18 +106,30 @@ def fetch_company_page(client: HttpClientLike, sec_code: str) -> str:
 
 
 def parse_kessan_disclosures(html: str) -> list[JpxDisclosure]:
+    matches = list(_ROW_PATTERN.finditer(html))
     disclosures = []
-    for m in _ROW_PATTERN.finditer(html):
+    for i, m in enumerate(matches):
         href = m.group("href")
         if not href.startswith("http"):
             href = DISC_HOST + href
+
+        window_end = min(m.end() + _MAX_ROW_WINDOW, matches[i + 1].start() if i + 1 < len(matches) else len(html))
+        window = html[m.end():window_end]
+        ixbrl_match = _IXBRL_HREF_PATTERN.search(window)
+        ixbrl_url = None
+        if ixbrl_match:
+            ixbrl_href = ixbrl_match.group(1)
+            ixbrl_url = ixbrl_href if ixbrl_href.startswith("http") else DISC_HOST + ixbrl_href
+
         disclosures.append(
-            JpxDisclosure(disclosure_date=m.group("date"), title=m.group("title"), pdf_url=href)
+            JpxDisclosure(
+                disclosure_date=m.group("date"), title=m.group("title"), pdf_url=href, ixbrl_url=ixbrl_url
+            )
         )
     return disclosures
 
 
-def _title_matches_kind(title: str, disclosure_kind: str) -> bool:
+def title_matches_kind(title: str, disclosure_kind: str) -> bool:
     """tdnet_client._match_disclosure_kind()と同じ判定基準（内容の一貫性のため）。
     "業績予想の修正"は連続する部分文字列としては一致しないタイトル表記が実在する
     （例:「業績予想(連結)の修正に関するお知らせ」、実機確認、2026-09-27）ため、
@@ -145,7 +169,7 @@ def select_matching_disclosure(
     for d in disclosures:
         if d.pdf_url in exclude:
             continue
-        if not _title_matches_kind(d.title, disclosure_kind):
+        if not title_matches_kind(d.title, disclosure_kind):
             continue
         try:
             d_dt = datetime.date(*(int(p) for p in d.disclosure_date.split("/")))
@@ -181,3 +205,11 @@ def download_pdf(client: GetClientLike, pdf_url: str) -> bytes:
     if body[:4] != _PDF_MAGIC:
         raise RuntimeError(f"{pdf_url}: PDFとして期待される形式ではありません")
     return body
+
+
+def download_ixbrl(client: GetClientLike, ixbrl_url: str) -> bytes:
+    """REITの決算短信iXBRL（inline XBRL）HTMLファイルを取得する。PDFと異なりUTF-8の
+    HTMLなので、先頭バイトでの形式チェックは行わない（サーバーエラー時は後段の
+    `<ix:nonFraction`タグ抽出が0件になることで検知できるため、ここでは単純に取得のみ
+    行う）。"""
+    return client.get(ixbrl_url)
