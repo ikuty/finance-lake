@@ -380,6 +380,47 @@ def test_fetch_document_file_raises_after_exhausting_retries_on_malformed_respon
         fetch_documents.fetch_document_file(client, "S100AAAA", 5, "dummy-key", stats, max_retries=5)
 
 
+def test_fetch_document_file_fails_fast_on_edinet_error_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    # HTTPステータス200でも、書類が恒久的に取得できない場合はEDINET独自の
+    # {"metadata": {"status": "404", ...}}という形のエラー本体が返る（2026-10-11実機
+    # 確認: REITの一部の古い書類）。これはリトライしても解決しないため、
+    # マジックバイト不一致用の5回リトライを経由せず即座に失敗する。
+    error_body = json.dumps(
+        {"metadata": {"title": "書類取得API", "status": "404", "message": "Not Found"}}
+    ).encode("utf-8")
+    stats = make_stats()
+    client = make_client((200, error_body))
+    sleep_calls = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    with pytest.raises(RuntimeError, match="EDINET APIエラー status=404"):
+        fetch_documents.fetch_document_file(client, "S100MI4D", 1, "dummy-key", stats)
+
+    assert sleep_calls == []
+    assert stats.malformed_response_retries == 0
+
+
+def test_edinet_error_status_detects_error_envelope() -> None:
+    body = json.dumps({"metadata": {"status": "404", "message": "Not Found"}}).encode("utf-8")
+    assert fetch_documents._edinet_error_status(body) == "404"
+
+
+def test_edinet_error_status_returns_none_for_success_envelope() -> None:
+    body = json.dumps({"metadata": {"status": "200", "message": "OK"}}).encode("utf-8")
+    assert fetch_documents._edinet_error_status(body) is None
+
+
+def test_edinet_error_status_returns_none_for_non_json_body() -> None:
+    assert fetch_documents._edinet_error_status(b"PK\x03\x04binary-zip-data") is None
+
+
+def test_edinet_error_status_returns_none_for_other_json_shapes() -> None:
+    # API Gateway等の別形式のエラー本体(statusCodeキー、metadataキーなし)は対象外。
+    # 既存のマジックバイト不一致リトライ経路に委ねる。
+    body = json.dumps({"statusCode": "429", "message": "Too Many Requests"}).encode("utf-8")
+    assert fetch_documents._edinet_error_status(body) is None
+
+
 # --- doc_output_path / save_atomic ------------------------------------------------
 
 
@@ -855,6 +896,55 @@ def test_process_day_filters_out_docs_without_seccode(
 
     assert count == 1
     assert mock_dl.call_count == 1
+
+
+@pytest.mark.parametrize("form_code", ["07B000", "07B001", "10B000", "10B001"])
+def test_is_reit_form_code_matches_reit_forms(form_code: str) -> None:
+    assert fetch_documents.is_reit_form_code(form_code) is True
+
+
+@pytest.mark.parametrize("form_code", ["07A000", "082000", "09A000", "06A000", None, ""])
+def test_is_reit_form_code_rejects_non_reit_forms(form_code: str | None) -> None:
+    assert fetch_documents.is_reit_form_code(form_code) is False
+
+
+def test_process_day_includes_reit_docs_without_seccode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REIT(投資法人)はsecCodeが常にnullだが、formCodeが'07B'/'10B'なら対象に含める。
+    一方、secCodeもなく'07A'(投資信託・REITではない)のformCodeを持つ書類は除外されたままにする。"""
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    stats = make_stats()
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    data = {
+        "results": [
+            {"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340", "formCode": None},
+            {
+                "docID": "S100CCCC",
+                "edinetCode": "E24347",
+                "secCode": None,
+                "formCode": "07B000",
+                "fundCode": "G07884",
+            },
+            {
+                "docID": "S100DDDD",
+                "edinetCode": "E12444",
+                "secCode": None,
+                "formCode": "07A000",
+                "fundCode": "G07361",
+            },
+        ]
+    }
+    with patch("fetch_documents.fetch_day", return_value=data), \
+         patch("fetch_documents.download_doc_files", return_value=True) as mock_dl:
+        count = fetch_documents.process_day(
+            conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
+            TEST_LOGGER, "test.log", ALL_TYPES
+        )
+
+    assert count == 2
+    assert mock_dl.call_count == 2
 
 
 # --- Slack通知 ---------------------------------------------------------------

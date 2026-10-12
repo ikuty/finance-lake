@@ -89,6 +89,14 @@ Python 3.12（stdlib中心、`boto3`のみ例外）。他のレイク層サー�
 
 - 実運用での再試行待ち（`status_report.py`の「pending（再試行待ち）」）・
   最終`skipped`／`error`確定の発生率の観察
+- **REIT（投資法人）対応**（2026-10-11 Phase 0完了・Phase 1着手、設計は
+  `docs/reit_support_design.md`参照）: 対象企業seed（`edinet_common_stock_issuers.csv`）に
+  不動産REIT64社を追加、`jpx_disclosure_client`の行パーサーに`id="4101_N"`
+  （REITの決算短信行、通常企業は`id="1101_N"`）対応を追加、PDFに加えてiXBRL/XBRL本体
+  （`tse-re-t:`タクソノミ、1口当たり指標が構造化タグとして存在する）のダウンロードを
+  追加、REIT専用のワンショットバックフィル（会社詳細ページ1回取得で決算短信履歴を丸ごと
+  取得、TDnet日次イベントの反復は不要）を追加する。インフラファンド7社はXBRL提出義務の
+  対象外と確認済みのため対象外（別タスク）。
 
 ## 下流（finance-dwh）での利用
 
