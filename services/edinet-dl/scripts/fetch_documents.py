@@ -586,9 +586,26 @@ def is_reit_form_code(form_code: str | None) -> bool:
     return form_code is not None and form_code[:3] in ("07B", "10B")
 
 
-# seed/edinet_etf_fund_issuers.csv の格納先（スクリプトからの相対パス。Dockerイメージでは
-# WORKDIR直下にCOPYされる、Dockerfile参照）。
-ETF_FUND_SEED_PATH = Path(__file__).resolve().parent / "seed" / "edinet_etf_fund_issuers.csv"
+def _resolve_etf_fund_seed_path() -> Path:
+    """seed/edinet_etf_fund_issuers.csvの格納先を解決する。
+
+    Dockerイメージでは fetch_documents.py 自身が WORKDIR(/app) 直下にCOPYされ、
+    seed/ もその直下の兄弟ディレクトリになる（Dockerfile参照）ため
+    `script_dir/seed/...` を使う。一方リポジトリを直接チェックアウトして実行する場合
+    （動作確認・backfill_etf.py等）は `services/edinet-dl/scripts/fetch_documents.py`
+    と `services/edinet-dl/seed/` がscripts/の1つ上の階層の兄弟ディレクトリになる
+    （2026-10-17発見: 当初script_dir直下決め打ちで、リポジトリ直接実行時に
+    seedが見つからずキーが0件になる不具合があった）。前者を優先し、無ければ後者を試す。
+    """
+    script_dir = Path(__file__).resolve().parent
+    docker_layout = script_dir / "seed" / "edinet_etf_fund_issuers.csv"
+    if docker_layout.exists():
+        return docker_layout
+    return script_dir.parent / "seed" / "edinet_etf_fund_issuers.csv"
+
+
+# seed/edinet_etf_fund_issuers.csv の格納先。
+ETF_FUND_SEED_PATH = _resolve_etf_fund_seed_path()
 
 
 def load_etf_fund_keys(path: Path = ETF_FUND_SEED_PATH) -> set[tuple[str, str]]:
