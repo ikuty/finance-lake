@@ -724,6 +724,7 @@ def test_run_stops_processing_when_time_budget_exceeded(
         logger: logging.Logger,
         log_path: str,
         enabled_types: set[int],
+        etf_fund_keys: set[tuple[str, str]],
     ) -> int:
         stats.days_processed.append(date_str)
         return 0
@@ -941,6 +942,80 @@ def test_process_day_includes_reit_docs_without_seccode(
         count = fetch_documents.process_day(
             conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
             TEST_LOGGER, "test.log", ALL_TYPES
+        )
+
+    assert count == 2
+    assert mock_dl.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("edinet_code", "fund_code"),
+    [("E09096", "G11332"), ("E35933", "G15198")],
+)
+def test_is_etf_fund_matches_seed_keys(edinet_code: str, fund_code: str) -> None:
+    keys = {("E09096", "G11332"), ("E35933", "G15198")}
+    assert fetch_documents.is_etf_fund(edinet_code, fund_code, keys) is True
+
+
+@pytest.mark.parametrize(
+    ("edinet_code", "fund_code"),
+    [("E09096", "G99999"), (None, "G11332"), ("E09096", None), (None, None)],
+)
+def test_is_etf_fund_rejects_unknown_or_missing_keys(edinet_code: str | None, fund_code: str | None) -> None:
+    keys = {("E09096", "G11332")}
+    assert fetch_documents.is_etf_fund(edinet_code, fund_code, keys) is False
+
+
+def test_load_etf_fund_keys_reads_seed_csv(tmp_path: Path) -> None:
+    seed_path = tmp_path / "edinet_etf_fund_issuers.csv"
+    seed_path.write_text(
+        "edinet_code,fund_code,sec_code,fund_name,note\n"
+        "E09096,G11332,14760,ｉシェアーズ・コア　Ｊリート　ＥＴＦ,確認済み\n",
+        encoding="utf-8",
+    )
+    keys = fetch_documents.load_etf_fund_keys(seed_path)
+    assert keys == {("E09096", "G11332")}
+
+
+def test_load_etf_fund_keys_returns_empty_set_when_missing(tmp_path: Path) -> None:
+    assert fetch_documents.load_etf_fund_keys(tmp_path / "does_not_exist.csv") == set()
+
+
+def test_process_day_includes_etf_docs_without_seccode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """確認済みETFはsecCodeもREITのformCodeも持たないが、(edinetCode, fundCode)が
+    etf_fund_keysに含まれていれば対象に含める。一方、同じ運用会社配下でもseedに
+    無いfundCode(非上場ファンド)は除外されたままにする。"""
+    conn = fetch_documents.init_db(tmp_path / "index.db")
+    stats = make_stats()
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    data = {
+        "results": [
+            {"docID": "S100AAAA", "edinetCode": "E00001", "secCode": "12340", "formCode": None},
+            {
+                "docID": "S100EEEE",
+                "edinetCode": "E09096",
+                "secCode": None,
+                "formCode": "07A000",
+                "fundCode": "G11332",
+            },
+            {
+                "docID": "S100FFFF",
+                "edinetCode": "E09096",
+                "secCode": None,
+                "formCode": "07A000",
+                "fundCode": "G99999",
+            },
+        ]
+    }
+    etf_fund_keys = {("E09096", "G11332")}
+    with patch("fetch_documents.fetch_day", return_value=data), \
+         patch("fetch_documents.download_doc_files", return_value=True) as mock_dl:
+        count = fetch_documents.process_day(
+            conn, fetch_documents.EdinetHttpClient(), "2026-08-13", "key", tmp_path, 0, stats,
+            TEST_LOGGER, "test.log", ALL_TYPES, etf_fund_keys
         )
 
     assert count == 2
