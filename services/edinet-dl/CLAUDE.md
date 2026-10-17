@@ -75,6 +75,15 @@ Python 3.12（stdlib中心）を採用。本ジョブはEDINET APIへのI/Oバ�
   `services/ir-disclosure-dl/docs/reit_support_design.md`参照。
   （J-Quantsを使った数値検証プロジェクトの一環で、REITの開示がDWHに一切存在しないことから
   発覚した。検証プロジェクト自体はREITを対象外として進める。）
+- **ETF（上場投資信託）対応**（2026-10-13判明、2026-10-17調査完了・実装着手）: 投資信託も
+  REIT同様secCodeが常にnullだが、REITと異なり1運用会社(edinetCode)配下に多数のfundCode
+  （非上場ファンド含む）が存在しformCode単体では判別不可、かつDEI証券コードタグも運用会社
+  依存で信頼できない（大和・ブラックロック等の主要運用会社は0%）。JPX公式ETF一覧との
+  ファンド名称DEIタグ照合で417本中332本を確認し、`seed/edinet_etf_fund_issuers.csv`の
+  確認済みリスト方式を採用（`fetch_documents.py`の`is_etf_fund`・`backfill_etf.py`実装済み、
+  Mac Miniへの未デプロイ・バックフィル未実行）。詳細調査結果は
+  `docs/etf_fund_support_design.md`参照。finance-dwh側（cleansed/intermediate/mart層）は
+  未着手（ETFのXBRL taxonomy構造自体が未調査、Phase 0相当の調査が必要）。
 
 ## 参照
 

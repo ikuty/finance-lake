@@ -25,10 +25,24 @@ DAYS_WINDOWの対象期間の終端は「今日」ではなく**前日**（`last
 されると、`already_done()`により当日の本当のデータ（その日の営業時間中に提出される分）
 が翌日以降も二度と自動取得されなくなる不具合があった。
 
-対象は secCode が設定されている書類（上場企業）、および formCode が '07B'/'10B'
+対象は secCode が設定されている書類（上場企業）、formCode が '07B'/'10B'
 （REIT＝投資法人の有報・半期報告書、2026-10-11追加。REITはsecCodeが常にnullのため別途
 判定する。詳細は`is_reit_form_code`・services/ir-disclosure-dl/docs/reit_support_design.md
-参照）のいずれか。type=1(XBRL)・type=2(PDF)・
+参照）、または(edinetCode, fundCode)が`seed/edinet_etf_fund_issuers.csv`の確認済み
+ETF(上場投資信託)一覧に含まれる書類（2026-10-17追加）のいずれか。
+
+ETF対応について: 投資信託（ordinance_code='030'、formCode '04A'/'07A'/'10A'）は、EDINET
+書類一覧APIのsecCodeが常に null になる（REITと同じ構造的欠落）のに加え、1つのedinetCode
+（運用会社）配下に多数のfundCode（個別ファンド）が存在し、非上場ファンドが大半を占める
+（実機確認: 国内投資信託全体で87社5,410fundCode、JPX上場ETFは417本のみ）。REITと異なり
+XBRL本体のDEI項目（証券コード、DEI）も運用会社によっては一貫して未設定（実機確認:
+大和・ブラックロック・ニッセイ等の主要運用会社は0%、Global X・野村等は一部のみ）なため、
+fundCode単体での構造的な判別は不可能。このため、JPXの公式ETF一覧とEDINETのファンド名称
+DEIタグ（こちらは運用会社に依らず100%取得できることを実機確認）をテキスト照合して
+確認した(edinetCode, fundCode)ペアのみを対象にする、確認済みリスト方式を採る
+（REITのform_code判定のような構造的フィルタが使えないため、ir-disclosure-dlの
+edinet_reit_issuers.csvと同じ「個別確認済みリスト」パターンを踏襲）。調査手法の詳細は
+`docs/etf_fund_support_design.md`参照。type=1(XBRL)・type=2(PDF)・
 type=5(CSV化XBRL)の3形式のうち、--csv/--pdf/--xbrlで指定したものだけを取得する
 （いずれも未指定なら全形式が対象、後方互換のデフォルト）。XBRL・CSVはEDINETから
 zip形式で返るが、DWH等での後利用を考慮し、展開した上で中身の各ファイルを個別に
@@ -76,6 +90,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime
 import gzip
 import http.client
@@ -571,6 +586,50 @@ def is_reit_form_code(form_code: str | None) -> bool:
     return form_code is not None and form_code[:3] in ("07B", "10B")
 
 
+def _resolve_etf_fund_seed_path() -> Path:
+    """seed/edinet_etf_fund_issuers.csvの格納先を解決する。
+
+    Dockerイメージでは fetch_documents.py 自身が WORKDIR(/app) 直下にCOPYされ、
+    seed/ もその直下の兄弟ディレクトリになる（Dockerfile参照）ため
+    `script_dir/seed/...` を使う。一方リポジトリを直接チェックアウトして実行する場合
+    （動作確認・backfill_etf.py等）は `services/edinet-dl/scripts/fetch_documents.py`
+    と `services/edinet-dl/seed/` がscripts/の1つ上の階層の兄弟ディレクトリになる
+    （2026-10-17発見: 当初script_dir直下決め打ちで、リポジトリ直接実行時に
+    seedが見つからずキーが0件になる不具合があった）。前者を優先し、無ければ後者を試す。
+    """
+    script_dir = Path(__file__).resolve().parent
+    docker_layout = script_dir / "seed" / "edinet_etf_fund_issuers.csv"
+    if docker_layout.exists():
+        return docker_layout
+    return script_dir.parent / "seed" / "edinet_etf_fund_issuers.csv"
+
+
+# seed/edinet_etf_fund_issuers.csv の格納先。
+ETF_FUND_SEED_PATH = _resolve_etf_fund_seed_path()
+
+
+def load_etf_fund_keys(path: Path = ETF_FUND_SEED_PATH) -> set[tuple[str, str]]:
+    """確認済みETF(上場投資信託)の(edinetCode, fundCode)一覧を読み込む。
+
+    投資信託はREITと異なりformCode単体では非上場ファンドと区別できない（本ファイル冒頭
+    「ETF対応について」参照）ため、JPXのETF一覧とDEIファンド名称タグの照合で個別に確認した
+    (edinetCode, fundCode)ペアのみをseed/edinet_etf_fund_issuers.csvの確認済みリストとして
+    持つ。ファイルが無ければ空集合を返す（テスト環境等でseedを用意していない場合に備える）。
+    """
+    if not path.exists():
+        return set()
+    keys: set[tuple[str, str]] = set()
+    with path.open(encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            keys.add((row["edinet_code"], row["fund_code"]))
+    return keys
+
+
+def is_etf_fund(edinet_code: str | None, fund_code: str | None, etf_fund_keys: set[tuple[str, str]]) -> bool:
+    """確認済みETFの(edinetCode, fundCode)かどうかを判定する。"""
+    return edinet_code is not None and fund_code is not None and (edinet_code, fund_code) in etf_fund_keys
+
+
 def process_day(
     conn: sqlite3.Connection,
     client: EdinetHttpClient,
@@ -582,14 +641,23 @@ def process_day(
     logger: logging.Logger,
     log_path: str,
     enabled_types: set[int],
+    etf_fund_keys: set[tuple[str, str]] | None = None,
 ) -> int:
     """対象日の一覧取得〜書類本体ダウンロード〜fetch_progress更新までを行う。
     戻り値はsecCode絞り込み後の対象件数。"""
+    if etf_fund_keys is None:
+        etf_fund_keys = set()
     day_start = time.monotonic()
     data = fetch_day(client, date_str, api_key, stats)
     save_list_response(data_dir, date_str, data)
     all_results = data.get("results", [])
-    targets = [r for r in all_results if r.get("secCode") or is_reit_form_code(r.get("formCode"))]
+    targets = [
+        r
+        for r in all_results
+        if r.get("secCode")
+        or is_reit_form_code(r.get("formCode"))
+        or is_etf_fund(r.get("edinetCode"), r.get("fundCode"), etf_fund_keys)
+    ]
     logger.info(f"{date_str}: 一覧{len(all_results)}件 / 対象{len(targets)}件")
 
     failed_doc_ids: list[str] = []
@@ -665,9 +733,11 @@ def run(
     todo = [d for d in dates if force or not already_done(conn, d.isoformat())]
     stats = RunStats(start=start, end=end)
     type_names = ",".join(TYPE_SUFFIX[t] for t in sorted(enabled_types))
+    etf_fund_keys = load_etf_fund_keys()
     logger.info(
         f"対象期間: {start} 〜 {end}（{len(dates)}日間）/ 未取得: {len(todo)}日 / "
-        f"force={force} / 対象type: {type_names} / 時間予算: {time_budget_seconds:.0f}秒"
+        f"force={force} / 対象type: {type_names} / 時間予算: {time_budget_seconds:.0f}秒 / "
+        f"確認済みETF: {len(etf_fund_keys)}件"
     )
 
     run_started = time.monotonic()
@@ -685,7 +755,9 @@ def run(
 
         date_str = d.isoformat()
         try:
-            process_day(conn, client, date_str, api_key, data_dir, delay, stats, logger, log_path, enabled_types)
+            process_day(
+                conn, client, date_str, api_key, data_dir, delay, stats, logger, log_path, enabled_types, etf_fund_keys
+            )
         except RateLimitedError as e:
             logger.error(f"[{i + 1}/{len(todo)}] {date_str}: 中断 ({e})")
             break
