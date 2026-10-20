@@ -46,44 +46,31 @@ EDINET（金融庁の電子開示システム）から書類ファイルを取�
 Python 3.12（stdlib中心）を採用。本ジョブはEDINET APIへのI/Oバウンドな処理で、かつ意図的にリクエスト間隔を空けているため、省メモリ・高速実行の軸はほぼ効かないと判断。Go等への書き換えは、動作確認済みのコードを捨てて存在しない性能問題を解決することになり、over engineeringと判断して見送った。
 - 依存管理: 標準ライブラリのみ（依存ゼロ）で完結している方針だったが、バックフィル進捗レポートのS3アップロードのため`boto3`（AWS公式SDK）を例外的に追加した（2026-09-08、`jpx-daily-pdf-dl`と同じ判断。AWS Signature V4の自前実装は複雑で保守コストが高いため）。
 
-## 現状（2026-09-02時点）
+## 現状（2026-10-20時点）
 
 - 実装・デプロイ済み。日次ジョブ（`--csv --pdf`）が稼働中。
-- バックフィル完了分: 2026年5月・6月・7月・8月・9月（進行中）。
+- 初回バックフィル（2016-08-13〜）完了済み。
 - Keep-Alive接続（`EdinetHttpClient`）導入済み（1リクエストあたり約32%短縮）。
-- `finance-lake`モノレポへの再編作業中（このコミット時点でリポジトリ内の移動は完了、Mac Mini側・GitHubリポジトリ名変更は未実施）。
+- `finance-lake`モノレポへの再編完了（Mac Mini側・GitHubリポジトリ名変更含む）。
+- **REIT（投資法人）対応完了**（2026-10-11）: `fetch_documents.py`の`is_reit_form_code`
+  （`formCode`が`07B`/`10B`で始まる書類を対象に追加）実装・デプロイ済み。過去分は
+  `backfill_reit.py`で遡及取得済み（725件処理、失敗14件＝対象書類の全形式(type=1/2/5)が
+  404＝取下げ等で書類本体が既に取得不能と見られるケースのみ、23,062ファイル・約1.87GB
+  ダウンロード）。finance-dwh側（cleansed/intermediate/mart層）も全4 Phase完了・
+  本番デプロイ済み。
+- **ETF（上場投資信託）対応完了**（2026-10-17）: `fetch_documents.py`の`is_etf_fund`
+  （`seed/edinet_etf_fund_issuers.csv`の確認済み(edinetCode, fundCode)との照合）実装・
+  デプロイ済み。過去分は`backfill_etf.py`で遡及取得済み（5,482件処理、失敗166件＝同様に
+  対象書類の全形式が404のケースのみ、165,373ファイル・約7.3GBダウンロード）。finance-dwh側のcleansed層
+  対応（documents/report_periods/facts、JSON型推論バグ修正含む）・intermediate/mart層
+  （絶対額指標、1口当たり指標は見送り）とも完了・feature branchにpush済み
+  （`feature/etf-cleansed-layer`、dev未merge）。
 
 ## 次にやること（未着手）
 
-- GitHubリポジトリ名の変更（`edinet-dl`→`finance-lake`）
-- Mac Mini側の実ディレクトリ・`.env`・systemd unitの新パスへの移行
-- GitHub Actionsワークフローのリネーム・pathsフィルタ追加
 - `docs/definitions`（docTypeCodeごとの標準タクソノミ要素定義）の作成（設計方針は合意済み、未着手）
-- **REIT（投資法人）対応**（2026-10-07判明、2026-10-11 Phase 0完了・Phase 1着手）: 現状、
-  書類一覧APIの`secCode`で絞り込んでいるため（本ファイル冒頭「対象はsecCodeが設定されている
-  書類」参照）、REITの書類は一度もレイクに取得されていない。EDINET上、投資法人には書類一覧
-  APIの`secCode`が付与されない（常に`null`）ため。
-  ただし、XBRL本体のDEI項目（`jpdei_cor:SecurityCodeDEI`＝「証券コード、DEI」）には、通常の
-  株式会社と全く同じ形式で証券コードが入っている（実機確認: アドバンス・レジデンス投資法人
-  (edinetCode=E24347, fundCode=G07884)の第28期有報で値`"32690"`＝証券コード3269の5桁表記）。
-  このため、書類一覧APIの`fundCode`が設定されている書類も取得対象に含めれば、DWH側の
-  `intermediate__edinet__dei_facts`の既存ロジックは改修なしで証券コードを取得できる見込み。
-  財務数値のうち絶対額系（純資産・当期純利益等）は`jppfs_cor:`名前空間（通常企業の生タグと
-  共通）から取得可能だが、1口当たり指標（EPS/BPS相当）はEDINET有報に構造化タグが存在しない
-  ことがPhase 0調査で確定した（代わりに`ir-disclosure-dl`経由のTDnet/JPX決算短信iXBRLを使う
-  設計にした）。Phase 0の詳細な調査結果・方針・Phase構成は
-  `services/ir-disclosure-dl/docs/reit_support_design.md`参照。
-  （J-Quantsを使った数値検証プロジェクトの一環で、REITの開示がDWHに一切存在しないことから
-  発覚した。検証プロジェクト自体はREITを対象外として進める。）
-- **ETF（上場投資信託）対応**（2026-10-13判明、2026-10-17調査完了・実装着手）: 投資信託も
-  REIT同様secCodeが常にnullだが、REITと異なり1運用会社(edinetCode)配下に多数のfundCode
-  （非上場ファンド含む）が存在しformCode単体では判別不可、かつDEI証券コードタグも運用会社
-  依存で信頼できない（大和・ブラックロック等の主要運用会社は0%）。JPX公式ETF一覧との
-  ファンド名称DEIタグ照合で417本中332本を確認し、`seed/edinet_etf_fund_issuers.csv`の
-  確認済みリスト方式を採用（`fetch_documents.py`の`is_etf_fund`・`backfill_etf.py`実装済み、
-  Mac Miniへの未デプロイ・バックフィル未実行）。詳細調査結果は
-  `docs/etf_fund_support_design.md`参照。finance-dwh側（cleansed/intermediate/mart層）は
-  未着手（ETFのXBRL taxonomy構造自体が未調査、Phase 0相当の調査が必要）。
+- ETF対応のfinance-dwh側PR作成・レビュー・dev→release→mainへの昇格
+- REIT（2026-10-11実機、725件処理分）の後続日次実行で新規提出分が正しく取り込まれているかの定点確認（未着手）
 
 ## 参照
 
