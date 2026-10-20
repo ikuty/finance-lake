@@ -4,6 +4,14 @@ EDINET書類一覧API・書類取得APIを日付単位で呼び出し、書類�
 取得・保存するサービス（`finance-lake`レイク層モノレポの1サービス）。メタデータの
 インデックス作成・中身の解釈は後段の別リポジトリの責務とし、ここでは扱わない。
 
+対象は、書類一覧APIの`secCode`が設定されている書類（通常の上場企業）に加え、
+`formCode`が`07B`/`10B`で始まる書類（REIT＝投資法人、2026-10-11追加）、および
+`seed/edinet_etf_fund_issuers.csv`の確認済みリストに一致する書類（ETF＝上場投資信託、
+2026-10-17追加）。REIT・ETFはいずれも書類一覧APIの`secCode`が常に`null`になる構造的な
+欠落があり、`secCode`だけでは取得対象から漏れるため別途判定している（詳細は
+[docs/etf_fund_support_design.md](./docs/etf_fund_support_design.md)、REITは
+[../ir-disclosure-dl/docs/reit_support_design.md](../ir-disclosure-dl/docs/reit_support_design.md)参照）。
+
 `finance-lake`全体の方針（実行基盤・リポジトリ構成等）は[ルートのCLAUDE.md](../../CLAUDE.md)、
 このサービス固有の設計判断は[CLAUDE.md](./CLAUDE.md)を参照。
 
@@ -27,6 +35,31 @@ mkdir -p data
 docker run --rm --env-file .env -v "$(pwd)/data:/data" edinet-dl:latest \
   --start-date 2016-08-13 --end-date 2026-08-13
 ```
+
+## REIT・ETF追加バックフィル（手動・1回限り、完了済み）
+
+`fetch_documents.py`へのREIT/ETF判定追加は今後の日次実行にのみ適用され、過去分は
+再ダウンロードされない。書類一覧API自体を再度呼び出す必要はなく（`data/response/`の
+生レスポンスはsecCode等で絞り込む前の全件を保存済みのため）、保存済みの一覧ファイルを
+スキャンして対象書類だけを遡及取得する専用スクリプトを使う。
+
+```
+docker run --rm --env-file .env -v "$(pwd)/data:/data" --entrypoint python3 edinet-dl:latest \
+  scripts/backfill_reit.py
+docker run --rm --env-file .env -v "$(pwd)/data:/data" --entrypoint python3 edinet-dl:latest \
+  scripts/backfill_etf.py
+```
+
+実行済み（Mac Mini実機）:
+
+| 対象 | 処理件数 | 失敗件数（404） | ダウンロードファイル数 | サイズ |
+|---|---|---|---|---|
+| REIT（2026-10-11） | 725件 | 14件 | 23,062ファイル | 約1.87GB |
+| ETF（2026-10-17） | 5,482件 | 166件 | 165,373ファイル | 約7.3GB |
+
+失敗はいずれも対象書類の全形式（type=1/2/5）が404になるケース（取下げ等により書類本体が
+API側から既に取得できない書類と見られる）のみで、取得ロジック自体の不具合ではない。詳細は
+[docs/backfill_notes.md](./docs/backfill_notes.md)参照。
 
 ## 日次更新（systemdタイマー）
 
