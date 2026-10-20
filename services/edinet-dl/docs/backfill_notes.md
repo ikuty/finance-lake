@@ -3,6 +3,31 @@
 手動バックフィルの実行結果・トラブルシューティングの記録。設計は
 [file_download_design.md](./file_download_design.md)参照。
 
+## 2026-10-17: ETF（上場投資信託）追加バックフィル完了
+
+`backfill_etf.py`をMac Mini実機で実行。`seed/edinet_etf_fund_issuers.csv`の確認済み
+(edinetCode, fundCode)332件に該当する書類を、保存済みの`data/response/`書類一覧API
+生レスポンスから遡及的にスキャンして取得した（詳細は
+[etf_fund_support_design.md](./etf_fund_support_design.md)参照）。
+
+**結果**: 5,482件処理、失敗166件、165,373ファイルダウンロード（7,297,353,040バイト≈7.3GB）。
+
+失敗166件は、対象書類のtype=1/2/5全てが404になるケース（1書類あたり3回のERRORログで
+計498行、166件×3と一致）。書類一覧APIには存在するが書類本体API側には存在しない、
+取下げ等による書類と見られる。取得ロジック自体の不具合ではなく、取得範囲を広げても解決しない
+想定内の欠落。
+
+## 2026-10-11: REIT（投資法人）追加バックフィル完了
+
+`backfill_reit.py`をMac Mini実機で実行。`formCode`が`07B`/`10B`で始まる書類を、保存済みの
+`data/response/`書類一覧API生レスポンスから遡及的にスキャンして取得した（詳細は
+[../../ir-disclosure-dl/docs/reit_support_design.md](../../ir-disclosure-dl/docs/reit_support_design.md)参照）。
+
+**結果**: 725件処理、失敗14件、23,062ファイルダウンロード（1,865,088,574バイト≈1.87GB）。
+
+失敗14件もETFと同様、対象書類のtype=1/2/5全てが404になるケース（取下げ等による書類本体の
+欠落と見られる）。
+
 ## 2026-09-03: Tapoの電源OFFスケジュールが働かず、日次実行が定時に走らなかった
 
 2026-09-02の日次実行後、OS自体は`shutdown -h now`で正常にシャットダウンした。しかし
