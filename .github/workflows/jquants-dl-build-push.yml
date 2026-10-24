@@ -1,0 +1,35 @@
+name: jquants-dl - Build and push image
+
+# 設計: services/jquants-dl/CLAUDE.md
+# services/jquants-dl/配下の変更をmainにpushした際に自動実行。Mac Miniの
+# 稼働状態に依存しないビルド＆push工程のみを担う。Mac Miniへの反映は
+# jquants-dl-deploy.yml（手動トリガー）で別途行う。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/jquants-dl/**
+      - .github/workflows/jquants-dl-build-push.yml
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: services/jquants-dl
+          file: services/jquants-dl/docker/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/jquants-dl:latest
