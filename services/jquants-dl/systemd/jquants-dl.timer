@@ -1,16 +1,17 @@
 # Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdタイマーユニットの例。
-# /etc/systemd/system/jquants-price-dl.timer にコピーする（jquants-price-dl.serviceと対で使う）。
+# /etc/systemd/system/jquants-dl.timer にコピーする（jquants-dl.serviceと対で使う）。
 #
 # 既存のOnCalendar列（jpx-daily-pdf-dl 04:01:00・edinet-dl 04:01:30・
 # mufg-corporate-actions 04:01:40(月のみ)・ir-disclosure-dl 04:01:42）より後、
 # finance-dwh-transform(04:01:45、finance-dwh側リポジトリ)より前の04:01:43に置く。
-# 1日1回のAPIコールのみで軽量なため、他サービスとの依存関係は無い。
+# 1日1回、複数エンドポイント（daily_quotes・listed_master等）をまとめて呼ぶが
+# いずれも軽量なため、この枠で十分収まる。他サービスとの依存関係は無い。
 #
 # マシンのシステムタイムゾーンはUTC（Etc/UTC）だが、Tapoの電源投入時刻はJSTで管理して
 # いるため、OnCalendarにも明示的にAsia/Tokyoを指定する。
 
 [Unit]
-Description=Run jquants-price-dl daily fetch
+Description=Run jquants-dl daily fetch
 
 [Timer]
 OnCalendar=*-*-* 04:01:43 Asia/Tokyo
