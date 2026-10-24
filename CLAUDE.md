@@ -67,7 +67,9 @@ GitHub上のdefault branchは`main`のまま（変更していない）。PRのb
 - `jpx-daily-pdf-dl`のバックフィル進捗レポート: Slack通知をGitHub Actions Artifact
   経由からSlack Files API（Bot Token＋`files:write`）直接送付へ変更する。
 - ウェアハウス層（`finance-dwh`）: raw/cleansed層は着手済み、mart層・アプリは今後。
-- **前日終値の低遅延取得**（将来着手、2026-09-06決定）: `jpx-daily-pdf-dl`のPDF日報は
-  2営業日以上遅延し不適。無料代替手段（GOOGLEFINANCE・Stooq・証券会社ログイン等）は
-  規約・技術制約により全て見送り済み。他サービスが一段落後、J-Quants Lightプラン
-  （月額1,650円）契約で対応する方針。
+- **前日終値の低遅延取得**（2026-10-24: J-Quants Lightプラン契約済み、実装はこれから）:
+  `jpx-daily-pdf-dl`のPDF日報は2営業日以上遅延し不適。無料代替手段（GOOGLEFINANCE・
+  Stooq・証券会社ログイン・東証上場会社情報サービスの株価情報・Alpha Vantage・
+  Financial Modeling Prep等）は規約・技術制約により全て見送り済み
+  （詳細は`[[prev-close-free-sources-exhausted]]`メモリ参照）。J-Quants Lightプラン
+  （月額1,650円）を契約し、全銘柄当日終値取得の実装に着手する段階。
