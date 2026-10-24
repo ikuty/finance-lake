@@ -1,19 +1,19 @@
-name: jquants-price-dl - CI
+name: jquants-dl - CI
 
 # push（main）と pull_request で実行。他サービスと同じ構成（mypy --strict + pytest）。
 # Mac Miniには依存しない。build-push.yml（イメージのビルド＆push）とは別の
-# ワークフローとして分離し、pathsフィルタでservices/jquants-price-dl/配下の変更のみに絞る。
+# ワークフローとして分離し、pathsフィルタでservices/jquants-dl/配下の変更のみに絞る。
 
 on:
   push:
     branches: [main]
     paths:
-      - services/jquants-price-dl/**
-      - .github/workflows/jquants-price-dl-ci.yml
+      - services/jquants-dl/**
+      - .github/workflows/jquants-dl-ci.yml
   pull_request:
     paths:
-      - services/jquants-price-dl/**
-      - .github/workflows/jquants-price-dl-ci.yml
+      - services/jquants-dl/**
+      - .github/workflows/jquants-dl-ci.yml
 
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: services/jquants-price-dl
+        working-directory: services/jquants-dl
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: services/jquants-price-dl/requirements*.txt
+          cache-dependency-path: services/jquants-dl/requirements*.txt
 
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt

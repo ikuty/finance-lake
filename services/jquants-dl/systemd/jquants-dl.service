@@ -1,27 +1,27 @@
 # Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdサービスユニットの例。
-# /etc/systemd/system/jquants-price-dl.service にコピーし、自分の環境の実際の
+# /etc/systemd/system/jquants-dl.service にコピーし、自分の環境の実際の
 # ユーザー名・パスに合わせて書き換えること。
 #
 # このunitはシャットダウンのExecStartを持たない。マシンのシャットダウンは共有unit
 # （リポジトリ直下のsystemd/finance-lake-shutdown.service）が全サービス共通で
 # 一手に引き受ける。finance-lake-shutdown.serviceの`After=`に
-# jquants-price-dl.serviceを追加すること（本サービス実行中ならシャットダウン
+# jquants-dl.serviceを追加すること（本サービス実行中ならシャットダウン
 # 開始を自動的に待つ）。finance-dwh側のfinance-dwh-transform.serviceの`After=`
-# にも追加が必要（jQuantsの終値をcleansedで使う場合、取り込みが先に終わって
+# にも追加が必要（jQuantsのデータをcleansedで使う場合、取り込みが先に終わって
 # いる必要があるため）。
 #
 # 有効化・起動確認:
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable jquants-price-dl.timer
-#   sudo systemctl start jquants-price-dl.timer
-#   systemctl list-timers jquants-price-dl.timer
-#   journalctl -u jquants-price-dl.service
+#   sudo systemctl enable jquants-dl.timer
+#   sudo systemctl start jquants-dl.timer
+#   systemctl list-timers jquants-dl.timer
+#   journalctl -u jquants-dl.service
 
 [Unit]
-Description=J-Quants daily stock price fetch
+Description=J-Quants daily data fetch (price, listed master, ...)
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/finance-lake/services/jquants-price-dl/.env -v /home/<user>/finance-lake/data/jquants-price-dl:/data jquants-price-dl:latest
+ExecStart=/usr/bin/docker run --rm --env-file /home/<user>/finance-lake/services/jquants-dl/.env -v /home/<user>/finance-lake/data/jquants-dl:/data jquants-dl:latest

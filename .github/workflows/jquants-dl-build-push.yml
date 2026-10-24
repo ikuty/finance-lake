@@ -1,16 +1,16 @@
-name: jquants-price-dl - Build and push image
+name: jquants-dl - Build and push image
 
-# 設計: services/jquants-price-dl/CLAUDE.md
-# services/jquants-price-dl/配下の変更をmainにpushした際に自動実行。Mac Miniの
+# 設計: services/jquants-dl/CLAUDE.md
+# services/jquants-dl/配下の変更をmainにpushした際に自動実行。Mac Miniの
 # 稼働状態に依存しないビルド＆push工程のみを担う。Mac Miniへの反映は
-# jquants-price-dl-deploy.yml（手動トリガー）で別途行う。
+# jquants-dl-deploy.yml（手動トリガー）で別途行う。
 
 on:
   push:
     branches: [main]
     paths:
-      - services/jquants-price-dl/**
-      - .github/workflows/jquants-price-dl-build-push.yml
+      - services/jquants-dl/**
+      - .github/workflows/jquants-dl-build-push.yml
 
 jobs:
   build-push:
@@ -29,7 +29,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: services/jquants-price-dl
-          file: services/jquants-price-dl/docker/Dockerfile
+          context: services/jquants-dl
+          file: services/jquants-dl/docker/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/jquants-price-dl:latest
+          tags: ghcr.io/${{ github.repository_owner }}/jquants-dl:latest
