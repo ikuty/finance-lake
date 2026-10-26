@@ -94,9 +94,11 @@ docker build -t edinet-dl:latest -f docker/Dockerfile .
 ## 6. systemd unitの登録
 
 各サービスのunitに加え、リポジトリ直下の共有unit（`finance-lake-shutdown.service`・
-`.timer`）も登録する。マシンのシャットダウンはどのサービスのunitも行わず、この共有unitが
-全サービス共通で一手に引き受ける（2026-09-06決定。詳細は`systemd/finance-lake-shutdown.service`
-のコメント参照）。
+`.timer`、`tailscale-update.service`・`.timer`）も登録する。マシンのシャットダウンは
+どのサービスのunitも行わず、この共有unitが全サービス共通で一手に引き受ける
+（2026-09-06決定。詳細は`systemd/finance-lake-shutdown.service`のコメント参照）。
+`tailscale-update`は電源投入直後にtailscaledを最新版へ更新する共有unit
+（2026-10-26追加、詳細は`systemd/scripts/tailscale-update.sh`のコメント参照）。
 
 ```
 cd /home/<user>/finance-lake/services/edinet-dl
@@ -108,11 +110,17 @@ cd /home/<user>/finance-lake
 sudo cp systemd/finance-lake-shutdown.service systemd/finance-lake-shutdown.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now finance-lake-shutdown.timer
+
+cp systemd/tailscale-update.env.example systemd/tailscale-update.env
+# tailscale-update.env に、通知専用に作成したSlack Incoming Webhook URLを設定する
+sudo cp systemd/tailscale-update.service systemd/tailscale-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tailscale-update.timer
 ```
 
 `edinet-dl.service`・`edinet-dl.timer`内のパス（`/home/<user>/finance-lake/services/edinet-dl/...`
 ・`/home/<user>/finance-lake/data/edinet-dl`）を、実際のユーザー名に合わせて事前に
-書き換えておくこと。
+書き換えておくこと。`tailscale-update.service`内の`/home/<user>/finance-lake/...`も同様。
 
 `finance-lake-shutdown.timer`（`OnCalendar=04:02:00 Asia/Tokyo`）は、各サービスのタイマー
 より後の時刻に設定すること。これより早いと、まだ発火していないサービスのタイマーを
