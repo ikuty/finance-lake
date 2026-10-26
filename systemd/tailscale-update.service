@@ -1,0 +1,28 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdサービスユニットの例。
+# /etc/systemd/system/tailscale-update.service にコピーする
+# （tailscale-update.timerと対で使う）。
+#
+# 背景・詳細は systemd/scripts/tailscale-update.sh のコメント参照（2026-10-26追加）。
+# 他サービス（edinet-dl.service等）と異なりDocker化しない。tailscaled自体という
+# ホストにインストールされたソフトウェアを更新する作業なので、コンテナ化する方が
+# むしろ複雑（ホストのtailscaledソケット・apt環境へのアクセスが必要）になるため。
+#
+# User=を指定していないため、systemdはこのunitをrootとして実行する
+# （finance-lake-shutdown.serviceの`shutdown -h now`と同じ仕組み）。これにより
+# `tailscale update`に必要なroot権限を、対話的なsudoパスワード入力なしで得られる。
+#
+# 有効化・起動確認:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tailscale-update.timer
+#   systemctl list-timers tailscale-update.timer
+#   journalctl -u tailscale-update.service
+
+[Unit]
+Description=Keep tailscaled on this Mac Mini updated (runs before the daily fetch jobs)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/home/<user>/finance-lake/systemd/tailscale-update.env
+ExecStart=/home/<user>/finance-lake/systemd/scripts/tailscale-update.sh
