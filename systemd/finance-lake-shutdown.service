@@ -26,6 +26,10 @@
 # dbt-docs-gen.serviceは2026-10-25追加（finance-dwh側、dbt docs generate+S3公開。
 # finance-dwh-transformより後に実行するサービスチェーンの最後）。
 #
+# tailscale-update.serviceは2026-10-26追加（tailscaledの自動更新。詳細は
+# systemd/scripts/tailscale-update.sh参照）。電源投入直後・他サービスより前に
+# 実行される想定だが、実行が長引いた場合に備えAfter=に含めておく。
+#
 # 本unitのタイマー（finance-lake-shutdown.timer）は、各サービスのタイマーの発火時刻
 # より後に設定すること。これより早いと、まだ発火していないサービスのタイマーを
 # 「実行中でない」と誤認し、待たずに即シャットダウンしてしまう。
@@ -39,7 +43,7 @@
 
 [Unit]
 Description=Shut down the machine after all daily fetch jobs complete
-After=edinet-dl.service jpx-daily-pdf-dl.service mufg-corporate-actions.service ir-disclosure-dl.service jquants-dl.service finance-dwh-transform.service dbt-docs-gen.service
+After=tailscale-update.service edinet-dl.service jpx-daily-pdf-dl.service mufg-corporate-actions.service ir-disclosure-dl.service jquants-dl.service finance-dwh-transform.service dbt-docs-gen.service
 
 [Service]
 Type=oneshot

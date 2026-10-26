@@ -1,0 +1,22 @@
+# Mac Miniホスト（Ubuntu 24.04 LTS）に配置するsystemdタイマーユニットの例。
+# /etc/systemd/system/tailscale-update.timer にコピーする
+# （tailscale-update.serviceと対で使う）。
+#
+# 04:00:30 JSTは、Tapoの電源投入時刻（04:00:00 JST）の直後かつ、他の全タイマー
+# （jpx-daily-pdf-dl 04:01:00・edinet-dl 04:01:30・...・finance-lake-shutdown 04:02:00）
+# より前。tailscaled再起動を伴う可能性があるため、他サービスの実行開始前に済ませる
+# （実際にはレイクの各fetchサービスは公開インターネット経由でデータ取得する設計で
+# Tailscaleに依存しないため、タイミング上の実害は無いはずだが、念のため先頭に置く）。
+#
+# マシンのシステムタイムゾーンはUTC（Etc/UTC）だが、Tapoの電源投入時刻はJSTで管理して
+# いるため、OnCalendarにも明示的にAsia/Tokyoを指定する。
+
+[Unit]
+Description=Run tailscale-update daily, before the fetch jobs
+
+[Timer]
+OnCalendar=*-*-* 04:00:30 Asia/Tokyo
+Persistent=true
+
+[Install]
+WantedBy=timers.target
