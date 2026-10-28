@@ -147,3 +147,21 @@ docker run --rm --env-file .env -v "$(pwd)/../../data/edinet-dl:/data" edinet-dl
 
 3,650日 × リクエスト間隔1.2秒 ≒ 70〜80分。中断してもfetch_progressテーブルにより
 未取得日だけ再開されるので、同じコマンドを再実行すれば安全に続きから再開できる。
+
+## 9. sshdのパスワード認証・root直接ログイン無効化（Tailscaleセキュリティ強化、2026-10-28実施）
+
+`/etc/ssh/sshd_config.d/50-cloud-init.conf`（cloud-init由来、`600 root:root`で非`root`
+ユーザからは読めない）が`PasswordAuthentication yes`を設定していたため、鍵認証に加えて
+パスワード認証でもSSHログインできる状態になっていた。OpenSSHの`Include`ディレクティブは
+同じキーワードについて最初に読んだ値を優先するため、上書きする新規ファイルは
+`50-cloud-init.conf`より**辞書順で前**（例: `10-...`）に置く必要がある。
+
+```
+echo 'PasswordAuthentication no' | sudo tee /etc/ssh/sshd_config.d/10-disable-password-auth.conf
+echo 'PermitRootLogin no' | sudo tee -a /etc/ssh/sshd_config.d/10-disable-password-auth.conf
+sudo sshd -t && sudo systemctl reload ssh
+sudo sshd -T | grep -iE 'permitrootlogin|passwordauthentication'
+```
+
+反映後は、**今のSSHセッションを切る前に別ターミナルから新規接続**して鍵認証ログインが
+通ることを必ず確認すること（設定ミスによる締め出しを防ぐため）。
