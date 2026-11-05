@@ -27,8 +27,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from backfill_tanshin import DEFAULT_RAW_DIR, DEFAULT_STAGING_DIR, load_progress
-from backfill_reit import load_reit_companies
+from backfill_tanshin import DEFAULT_RAW_DIR, DEFAULT_STAGING_DIR, load_progress, load_tanshin_companies
 
 DEFAULT_SEED_CSV_PATH = "/app/seed/edinet_common_stock_issuers.csv"
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
@@ -82,7 +81,7 @@ def main() -> None:
     seed = Path(os.environ.get("SEED_CSV_PATH", DEFAULT_SEED_CSV_PATH))
 
     if not args.allow_incomplete:
-        total = len(load_reit_companies(seed))
+        total = len(load_tanshin_companies(seed))
         done = len(load_progress(staging_dir))
         if done < total:
             print(f"取得が未完了です（完了{done}/{total}社）。--allow-incomplete で強制できます", file=sys.stderr)
