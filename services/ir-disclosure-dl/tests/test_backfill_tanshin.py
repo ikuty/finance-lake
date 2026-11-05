@@ -62,3 +62,19 @@ def test_load_tanshin_companies_dedupes_edinet_code(tmp_path: Path) -> None:
         "edinet_code,sec_code,filer_name\nE1,10010,A\nE2,10020,B\nE1,10010,A\n", encoding="utf-8"
     )
     assert [c["edinet_code"] for c in bt.load_tanshin_companies(csv_path)] == ["E1", "E2"]
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("2026年３月期 決算短信 〔日本基準〕（連結）", True),
+        ("2027年３月期 第１四半期決算短信〔日本基準〕(連結)", True),
+        ("（訂正・数値データ訂正）「2026年３月期 決算短信 〔日本基準〕（連結）」の一部訂正について", True),
+        ("2026年３月期 決算短信補足資料", False),
+        ("2025年３月期 第３四半期決算 決算短信補足資料", False),
+        ("（訂正）「2026年３月期 決算短信補足資料」の一部訂正について", False),
+        ("業績予想の修正に関するお知らせ", False),
+    ],
+)
+def test_is_tanshin_title(title: str, expected: bool) -> None:
+    assert bt.is_tanshin_title(title) is expected
