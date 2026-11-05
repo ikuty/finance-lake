@@ -54,3 +54,11 @@ def test_progress_roundtrip(tmp_path: Path) -> None:
     assert bt.load_progress(tmp_path) == {}
     bt.save_progress(tmp_path, {"E00001": {"found": 3, "downloaded": 3, "skipped": 0}}, "2024-03-01")
     assert bt.load_progress(tmp_path)["E00001"]["found"] == 3
+
+
+def test_load_tanshin_companies_dedupes_edinet_code(tmp_path: Path) -> None:
+    csv_path = tmp_path / "seed.csv"
+    csv_path.write_text(
+        "edinet_code,sec_code,filer_name\nE1,10010,A\nE2,10020,B\nE1,10010,A\n", encoding="utf-8"
+    )
+    assert [c["edinet_code"] for c in bt.load_tanshin_companies(csv_path)] == ["E1", "E2"]

@@ -144,6 +144,18 @@ def save_progress(staging_dir: Path, companies: dict[str, dict[str, int]], since
     save_atomic(staging_dir / PROGRESS_FILENAME, payload)
 
 
+def load_tanshin_companies(csv_path: Path) -> list[dict[str, str]]:
+    """seedの会社一覧。edinet_codeの重複行（seedに実在する）は先頭だけ残す。"""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for c in load_reit_companies(csv_path):  # 列は共通（edinet_code, sec_code, filer_name）
+        if c["edinet_code"] in seen:
+            continue
+        seen.add(c["edinet_code"])
+        out.append(c)
+    return out
+
+
 def build_metadata(
     company: dict[str, str], match: jpx_disclosure_client.JpxDisclosure
 ) -> dict[str, str | None]:
@@ -307,7 +319,7 @@ def main() -> None:
     logger = setup_logger(log_path)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    companies = load_reit_companies(seed_csv_path)  # 列は共通（edinet_code, sec_code, filer_name）
+    companies = load_tanshin_companies(seed_csv_path)
     if args.sec_code:
         companies = [c for c in companies if c["sec_code"] == args.sec_code]
         if not companies:
