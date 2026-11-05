@@ -26,6 +26,10 @@
 # dbt-docs-gen.serviceは2026-10-25追加（finance-dwh側、dbt docs generate+S3公開。
 # finance-dwh-transformより後に実行するサービスチェーンの最後）。
 #
+# finance-dwh-mart-transfer.serviceは2026-10-31追加（finance-dwh側、dbt build後のmartを
+# ikuty.com(VPS)へ転送。finance-dwh-transformの後・dbt-docs-genの前に実行される。
+# 詳細はfinance-dwh/docs/mart_transfer_design.md）。
+#
 # tailscale-update.serviceは2026-10-26追加（tailscaledの自動更新。詳細は
 # systemd/scripts/tailscale-update.sh参照）。電源投入直後・他サービスより前に
 # 実行される想定だが、実行が長引いた場合に備えAfter=に含めておく。
@@ -43,7 +47,7 @@
 
 [Unit]
 Description=Shut down the machine after all daily fetch jobs complete
-After=tailscale-update.service edinet-dl.service jpx-daily-pdf-dl.service mufg-corporate-actions.service ir-disclosure-dl.service jquants-dl.service finance-dwh-transform.service dbt-docs-gen.service
+After=tailscale-update.service edinet-dl.service jpx-daily-pdf-dl.service mufg-corporate-actions.service ir-disclosure-dl.service jquants-dl.service finance-dwh-transform.service finance-dwh-mart-transfer.service dbt-docs-gen.service
 
 [Service]
 Type=oneshot
