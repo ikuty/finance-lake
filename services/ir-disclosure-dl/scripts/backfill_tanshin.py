@@ -144,6 +144,17 @@ def save_progress(staging_dir: Path, companies: dict[str, dict[str, int]], since
     save_atomic(staging_dir / PROGRESS_FILENAME, payload)
 
 
+SUPPLEMENT_MARKER = "補足資料"
+
+
+def is_tanshin_title(title: str) -> bool:
+    """決算短信の本体か。title_matches_kindは「決算短信」を含めば真なので、
+    「決算短信補足資料」（説明資料のスライド。純資産などの表が無い）も含んでしまう。
+    バックフィルでは取得・取り込みの時間を無駄にするため除く。
+    「（訂正）決算短信」は訂正後の数値を含む本体なので残す。"""
+    return jpx_disclosure_client.title_matches_kind(title, "kessan_tanshin") and SUPPLEMENT_MARKER not in title
+
+
 def load_tanshin_companies(csv_path: Path) -> list[dict[str, str]]:
     """seedの会社一覧。edinet_codeの重複行（seedに実在する）は先頭だけ残す。"""
     seen: set[str] = set()
@@ -199,7 +210,7 @@ def backfill_company(
         raise
     guard.record_success(time.monotonic() - t0)
     disclosures = jpx_disclosure_client.parse_kessan_disclosures(html)
-    kessan = [d for d in disclosures if jpx_disclosure_client.title_matches_kind(d.title, "kessan_tanshin")]
+    kessan = [d for d in disclosures if is_tanshin_title(d.title)]
     in_range = [d for d in kessan if disclosure_date_to_iso(d.disclosure_date) >= since_iso]
     stats.kessan_found += len(in_range)
     logger.info(
