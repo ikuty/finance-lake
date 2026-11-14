@@ -15,7 +15,15 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth未指定(既定1)だと、gitleaks-actionがpush前後のコミット範囲をgit logで
+      # スキャンする際に「push前」のコミットが浅いcloneに含まれておらず、unknown revisionで
+      # 失敗する(2026-11-14に判明。10-31以降のmainへのpushで毎回失敗し、スキャンされたのは
+      # 約0バイトの「partial scan」だった=秘密情報のチェックが実質行われていなかった)。
+      # finance-dwhは2026-09-22に同じ原因で修正済み。個人プロジェクトの規模のため全履歴
+      # 取得(fetch-depth: 0)で問題ない。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
