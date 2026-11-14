@@ -74,9 +74,14 @@ GitHub Actions Secretsに秘密鍵を保存し、ワークフロー内でTailsca
 混入した場合の影響は大きいため、`gitleaks`（単機能・低メンテナンスのシークレットスキャン
 ツール）をCIに組み込む。
 
-- **トリガー**: `main`へのpush。個人運用でmainに直接pushする運用（PRを介さない）を想定して
-  いるため、`push`トリガーのみで十分。将来PRベースの運用に変える場合は`pull_request`
-  トリガーも追加し、マージ前に検知できるようにするとより安全
+- **トリガー**: `main`へのpushと`pull_request`（2026-11-14に`pull_request`を追加）。
+  当初は個人運用でmainに直接pushする運用を想定して`push`トリガーのみとしていたが、
+  ブランチ戦略（feature→dev→release→main）に変わり、リリースはrelease→mainのmerge commitで
+  mainに入る。gitleaks-actionがpush範囲のスキャンに使う`git log --no-merges --first-parent`では
+  merge commitしか出ず、mainへのpushでは常に「0 commits scanned」になる（スキャンされない）。
+  実際のコミットはPR（feature→dev）に現れるので、PRのコミットをスキャンする。mainへの
+  pushのトリガーは残す（直接pushされた場合の備え）。`actions/checkout`は`fetch-depth: 0`
+  （既定の浅いcloneだと「push前」のコミットが無く`unknown revision`で失敗する）
 - **過去履歴の遡及スキャン**: 不要。2026-08-25時点でリポジトリはまだ1コミットもない
   （`git status`で"No commits yet"）ため、最初のコミットから将来に向けてクリーンな状態を
   維持すればよい
