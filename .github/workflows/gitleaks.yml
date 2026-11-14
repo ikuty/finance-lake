@@ -1,15 +1,23 @@
 name: Gitleaks
 
 # 設計: services/edinet-dl/docs/deployment_design.md「秘密情報の継続的なチェック（gitleaks）」
-# main へのpushで実行。公開リポジトリのため無料で動作し、追加の認証情報は不要。
+# main へのpushと、pull_request（featureブランチ→devのPR等）で実行。公開リポジトリのため
+# 無料で動作し、追加の認証情報は不要。
 # 過去履歴の遡及スキャンは行わない（2026-08-25の初回コミット以降のみ対象で十分）。
+#
+# pull_requestでも実行する理由（2026-11-14判明）: リリースはrelease→mainのmerge commitで
+# mainに入るため、gitleaks-actionがpush範囲に使う`git log --no-merges --first-parent`では
+# merge commitしか出ず、mainへのpushでは常に「0 commits scanned」になる（スキャンされない）。
+# 実際のコミットはPR（feature→dev）に現れるので、PRのコミットをスキャンする。
 
 on:
   push:
     branches: [main]
+  pull_request:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   scan:
