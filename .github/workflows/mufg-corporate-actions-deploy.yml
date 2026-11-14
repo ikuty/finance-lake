@@ -39,6 +39,11 @@ jobs:
           script: |
             docker pull ghcr.io/${{ github.repository_owner }}/mufg-corporate-actions:latest
             docker tag ghcr.io/${{ github.repository_owner }}/mufg-corporate-actions:latest mufg-corporate-actions:latest
+            # 旧イメージは、同じタグを付け替えた時点でタグが外れて dangling(<none>)になり、デプロイの
+            # たびに溜まる(mufg-corporate-actionsは約3.65GB)。付け替えの後に回収する。-a は付けない
+            # (日次のsystemdタイマーが使う:latestのイメージは残す。停止中のコンテナが使うイメージも
+            # pruneが除外する)。回収の失敗はデプロイの成否と無関係なので警告にとどめる。
+            docker image prune -f || echo "::warning::docker image prune に失敗(デプロイ自体は完了している)"
 
 # docker run --rm 方式（コンテナ内にデーモンを置かない）のため、pull後の再起動や
 # サービス再読み込みは不要。次回のsystemdタイマー実行から新しいイメージが使われる。
