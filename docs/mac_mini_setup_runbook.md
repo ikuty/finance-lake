@@ -148,13 +148,51 @@ docker run --rm --env-file .env -v "$(pwd)/../../data/edinet-dl:/data" edinet-dl
 3,650日 × リクエスト間隔1.2秒 ≒ 70〜80分。中断してもfetch_progressテーブルにより
 未取得日だけ再開されるので、同じコマンドを再実行すれば安全に続きから再開できる。
 
-## 9. sshdのパスワード認証・root直接ログイン無効化（Tailscaleセキュリティ強化、2026-10-28実施）
+## 9. SSH鍵認証の可用性強化（`/home`ディスク障害対策、2026-10-05実施）
+
+`~<user>/.ssh/authorized_keys`は`/home`側HDD（`sdb`）上にある。`sshd_config`の
+`AuthorizedKeysFile`が既定（ホームディレクトリ相対）のままだと、`/home`がマウント
+できなくなった場合（ディスク故障・破損等）、鍵認証でのSSHログインができなくなる
+（パスワード認証を無効化している場合は完全にログイン手段を失う）。これに対し、
+OS用ディスク（`sda`、`/`側）にもauthorized_keysのコピーを置き、`sshd`がそちらを
+優先的に参照するよう変更した。
+
+```
+# 1. rootディスク側にコピーを作成
+sudo mkdir -p /etc/ssh/authorized_keys
+sudo cp ~/.ssh/authorized_keys /etc/ssh/authorized_keys/<user>
+sudo chown root:root /etc/ssh/authorized_keys /etc/ssh/authorized_keys/<user>
+sudo chmod 755 /etc/ssh/authorized_keys
+sudo chmod 644 /etc/ssh/authorized_keys/<user>
+
+# 2. 新規の設定ファイルを追加（既存の50-cloud-init.confは直接編集しない）
+echo 'AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys .ssh/authorized_keys2' | sudo tee /etc/ssh/sshd_config.d/99-authorized-keys-fallback.conf
+
+# 3. 構文チェック → 反映
+sudo sshd -t && sudo systemctl reload ssh
+```
+
+反映後は、**今のSSHセッションを切る前に別ターミナルから新規接続**して鍵認証が通ることを
+必ず確認すること（設定ミスによる締め出しを防ぐため）。
+
+`~<user>/.ssh/authorized_keys`（`/home`側）はそのまま残してよい。`sshd`は
+`AuthorizedKeysFile`に列挙した全パスを候補として参照するため、2つのファイルが共存しても
+問題はなく、`/etc/ssh/authorized_keys/<user>`側の設定ミス等に対する独立した予備としても
+機能する。
+
+**運用上の注意（重要）**: 今後SSH鍵を追加・ローテーションする際は、
+`~<user>/.ssh/authorized_keys`と`/etc/ssh/authorized_keys/<user>`の**両方**を更新する
+こと。片方のみの更新では新しい鍵と古い環境で整合しない状態が生じうる。
+
+## 10. sshdのパスワード認証・root直接ログイン無効化（Tailscaleセキュリティ強化、2026-10-28実施）
 
 `/etc/ssh/sshd_config.d/50-cloud-init.conf`（cloud-init由来、`600 root:root`で非`root`
 ユーザからは読めない）が`PasswordAuthentication yes`を設定していたため、鍵認証に加えて
 パスワード認証でもSSHログインできる状態になっていた。OpenSSHの`Include`ディレクティブは
 同じキーワードについて最初に読んだ値を優先するため、上書きする新規ファイルは
-`50-cloud-init.conf`より**辞書順で前**（例: `10-...`）に置く必要がある。
+`50-cloud-init.conf`より**辞書順で前**（例: `10-...`）に置く必要がある
+（`9.`の`99-authorized-keys-fallback.conf`のように後ろに置いても無効化される
+キーワードには効かない）。
 
 ```
 echo 'PasswordAuthentication no' | sudo tee /etc/ssh/sshd_config.d/10-disable-password-auth.conf
@@ -164,4 +202,4 @@ sudo sshd -T | grep -iE 'permitrootlogin|passwordauthentication'
 ```
 
 反映後は、**今のSSHセッションを切る前に別ターミナルから新規接続**して鍵認証ログインが
-通ることを必ず確認すること（設定ミスによる締め出しを防ぐため）。
+通ることを必ず確認すること（`9.`と同様、設定ミスによる締め出しを防ぐため）。
