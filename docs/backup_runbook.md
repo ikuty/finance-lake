@@ -12,9 +12,17 @@
   /home/<user>/finance-lake/data/edinet-dl
   /home/<user>/finance-lake/data/jpx-daily-pdf-dl
   /home/<user>/finance-lake/data/mufg-corporate-actions
+  /home/<user>/finance-lake/data/ir-disclosure-dl
+  /home/<user>/finance-lake/data/jquants-dl
   ```
   2026-09-23時点で合計約66GB（内訳: edinet-dl 32GB、jpx-daily-pdf-dl 34GB、
   mufg-corporate-actions 2.4MB）。500GBのバックアップHDDに対して十分な余裕がある。
+  ir-disclosure-dl（2026-10-05にバックアップ対象へ追加。サービス追加が前回バックアップ後
+  だったため未対象だった）は2026-10-05時点で約194MB。決算短信PDFのバックログ取り込みで
+  増え、2026-11-16時点で約20.8GiB（約9.4万ファイル）。jquants-dl（J-Quantsの生データ、
+  2026-11-18にバックアップ対象へ追加。サービス追加が前回バックアップ後だったため未対象だった）。
+  参考: 2026-11-18時点のedinet-dlは39.5GiB（約68万ファイル、restic 23分）、
+  jpx-daily-pdf-dlは33.7GiB（約1万ファイル）。リポジトリ全体は2026-11-18時点で約89GiB。
 - **ツール**: [restic](https://restic.net/)（重複排除ベースの増分バックアップツール）。
   各スナップショットは変化分のみ実容量を消費するが、復元時はスナップショット単独で
   完全な状態を復元できる（従来型の増分バックアップのようにフルバックアップからの
@@ -83,6 +91,8 @@ restic -r /mnt/backup/restic-repo --password-file ~/.restic-password init
    restic -r /mnt/backup/restic-repo --password-file ~/.restic-password backup /home/<user>/finance-lake/data/edinet-dl
    restic -r /mnt/backup/restic-repo --password-file ~/.restic-password backup /home/<user>/finance-lake/data/jpx-daily-pdf-dl
    restic -r /mnt/backup/restic-repo --password-file ~/.restic-password backup /home/<user>/finance-lake/data/mufg-corporate-actions
+   restic -r /mnt/backup/restic-repo --password-file ~/.restic-password backup /home/<user>/finance-lake/data/ir-disclosure-dl
+   restic -r /mnt/backup/restic-repo --password-file ~/.restic-password backup /home/<user>/finance-lake/data/jquants-dl
    ```
    完了を待たずにローカル端末を離れたい場合は`Ctrl+B`の後`D`でデタッチする（バックアップは
    継続する）。再接続は`ssh macmini`後に`tmux attach -t backup`。
